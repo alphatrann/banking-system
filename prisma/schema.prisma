@@ -1,0 +1,155 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Account {
+  id              String            @id @default(ulid())
+  email           String            @unique
+  password        String
+  createdAt       DateTime          @default(now()) @map("created_at")
+  ledgerEntries   LedgerEntry[]
+  idempotencyKeys IdempotencyKey[]
+  webhooks        WebhookEndpoint[]
+
+  @@map("accounts")
+}
+
+model Transaction {
+  id            String        @id @default(ulid())
+  createdAt     DateTime      @default(now()) @map("created_at")
+  ledgerEntries LedgerEntry[]
+  receipt       Receipt?
+
+  @@map("transactions")
+}
+
+model LedgerEntry {
+  id            String   @id @default(ulid())
+  transactionId String   @map("transaction_id")
+  accountId     String   @map("account_id")
+  amount        BigInt // Positive or negative
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+  account     Account     @relation(fields: [accountId], references: [id])
+
+  @@unique([transactionId, accountId])
+  @@map("ledger_entries")
+}
+
+model OutboxEvent {
+  id            String            @id @default(ulid())
+  aggregateType String            @map("aggregate_type")
+  aggregateId   String            @map("aggregate_id")
+  eventType     String            @map("event_type")
+  payload       Json
+  status        OutboxEventStatus @default(Pending)
+  createdAt     DateTime          @default(now()) @map("created_at")
+  processedAt   DateTime?         @map("processed_at")
+
+  @@map("outbox_event")
+}
+
+enum OutboxEventStatus {
+  Pending
+  Delivered
+}
+
+model WebhookEndpoint {
+  id        String  @id @default(ulid())
+  accountId String  @map("account_id")
+  url       String
+  secret    String
+  active    Boolean @default(true)
+
+  account Account        @relation(fields: [accountId], references: [id])
+  events  WebhookEvent[]
+
+  @@map("webhook_endpoints")
+}
+
+model WebhookEvent {
+  id           String             @id @default(ulid())
+  endpointId   String             @map("endpoint_id")
+  eventType    String             @map("event_type")
+  payload      Json
+  status       WebhookEventStatus @default(Pending)
+  nextRetryAt  DateTime?          @map("next_retry_at")
+  attemptCount Int                @default(0) @map("attempt_count")
+  createdAt    DateTime           @default(now()) @map("created_at")
+
+  endpoint WebhookEndpoint  @relation(fields: [endpointId], references: [id])
+  attempts WebhookAttempt[]
+
+  @@map("webhook_events")
+}
+
+enum WebhookEventStatus {
+  Pending
+  Delivered
+  Failed
+}
+
+model WebhookAttempt {
+  id             String   @id @default(ulid())
+  webhookEventId String   @map("webhook_event_id")
+  responseStatus Int      @map("response_status")
+  responseBody   String?  @map("response_body")
+  durationMs     Int      @map("duration_ms")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  webhookEvent WebhookEvent @relation(fields: [webhookEventId], references: [id])
+
+  @@map("webhook_attempts")
+}
+
+model IdempotencyKey {
+  accountId    String   @map("account_id")
+  key          String
+  requestHash  String?  @map("request_hash")
+  responseCode Int?     @map("response_code")
+  responseBody Json?    @map("response_body")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  account Account @relation(fields: [accountId], references: [id])
+
+  @@id([accountId, key])
+  @@map("idempotency_keys")
+}
+
+model File {
+  id           String   @id @default(ulid())
+  bucket       String
+  originalName String   @map("original_name")
+  object       String
+  size         BigInt
+  iv           String
+  mimetype     String
+  createdAt    DateTime @default(now()) @map("created_at")
+  receipt      Receipt?
+
+  @@map("files")
+}
+
+model Receipt {
+  fileId        String   @id @map("file_id")
+  transactionId String?  @unique @map("transaction_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  file        File         @relation(fields: [fileId], references: [id])
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@map("invoices")
+}
