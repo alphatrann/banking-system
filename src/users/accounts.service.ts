@@ -7,7 +7,7 @@ import {
 import { CreateAccountDto } from './dto/create-account.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { PostgresErrorCode } from '../prisma/error-codes';
-import { Prisma } from '../generated/prisma/client';
+import { Prisma } from '@prisma/client';
 import { generateId } from '../utils/id';
 
 @Injectable()
