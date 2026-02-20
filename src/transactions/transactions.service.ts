@@ -80,9 +80,9 @@ export class TransactionsService {
       try {
         responseBody = await this.prisma.$transaction(
           async (tx) => {
-            const balance = await this.computeBalance(ownerAccountId, tx);
+            const fromBalance = await this.computeBalance(ownerAccountId, tx);
 
-            if (dto.amount > balance) {
+            if (dto.amount > fromBalance) {
               throw new BadRequestException({
                 statusCode: HttpStatus.BAD_REQUEST,
                 error: 'Insufficient balance',
@@ -90,8 +90,8 @@ export class TransactionsService {
             }
 
             const transactionId = generateId('trans');
-            const fromLedgerId = generateId('from');
-            const toLedgerId = generateId('to');
+
+            const toBalance = await this.computeBalance(dto.toAccountId, tx);
 
             const transaction = await tx.transaction.create({
               data: {
@@ -100,14 +100,14 @@ export class TransactionsService {
                   createMany: {
                     data: [
                       {
-                        id: fromLedgerId,
                         accountId: ownerAccountId,
                         amount: -dto.amount,
+                        runningBalance: fromBalance - dto.amount,
                       },
                       {
-                        id: toLedgerId,
                         accountId: dto.toAccountId,
                         amount: dto.amount,
+                        runningBalance: toBalance + dto.amount,
                       },
                     ],
                   },
@@ -178,6 +178,14 @@ export class TransactionsService {
   }
 
   async computeBalance(accountId: string, tx?: Prisma.TransactionClient) {
+    const mostRecentEntry = await (tx ?? this.prisma).ledgerEntry.findFirst({
+      where: { accountId },
+      orderBy: { id: 'desc' },
+      take: 1,
+    });
+    if (mostRecentEntry?.runningBalance)
+      return Number(mostRecentEntry.runningBalance);
+
     const {
       _sum: { amount },
     } = await (tx ?? this.prisma).ledgerEntry.aggregate({

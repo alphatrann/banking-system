@@ -34,11 +34,12 @@ model Transaction {
 }
 
 model LedgerEntry {
-  id            String   @id @default(ulid())
-  transactionId String   @map("transaction_id")
-  accountId     String   @map("account_id")
-  amount        BigInt // Positive or negative
-  createdAt     DateTime @default(now()) @map("created_at")
+  id             Int      @id @default(autoincrement())
+  transactionId  String   @map("transaction_id")
+  accountId      String   @map("account_id")
+  amount         BigInt // Positive or negative
+  runningBalance BigInt?  @map("running_balance")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   transaction Transaction @relation(fields: [transactionId], references: [id])
   account     Account     @relation(fields: [accountId], references: [id])
@@ -57,7 +58,7 @@ model OutboxEvent {
   createdAt     DateTime          @default(now()) @map("created_at")
   processedAt   DateTime?         @map("processed_at")
 
-  @@map("outbox_event")
+  @@map("outbox_events")
 }
 
 enum OutboxEventStatus {
