@@ -11,7 +11,7 @@ import {
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { CurrentUser } from '../users/decorators';
-import type { Account } from '../generated/prisma/client';
+import type { Account } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards';
 
 @Controller()

@@ -21,7 +21,9 @@ import { TransactionsModule } from './transactions/transactions.module';
       envFilePath:
         process.env.NODE_ENV === 'production'
           ? '.env.production'
-          : '.env.development.local',
+          : process.env.NODE_ENV === 'test'
+            ? '.env.test.local'
+            : '.env.development.local',
       validationSchema: Joi.object({
         DATABASE_URL: Joi.string().required(),
         JWT_SECRET: Joi.string().required(),

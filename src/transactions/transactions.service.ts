@@ -9,7 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { generateId } from '../utils/id';
 import { hash } from '../utils/hash';
-import { Prisma } from '../generated/prisma/client';
+import { Prisma } from '@prisma/client';
 import {
   isForeignKeyViolation,
   isSerializationFailure,
@@ -18,7 +18,7 @@ import { BASE_ACCOUNT_AMOUNT } from '../constants';
 
 @Injectable()
 export class TransactionsService {
-  private readonly MAX_SERIALIZATION_RETRIES = 5;
+  private readonly MAX_SERIALIZATION_RETRIES = 3;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -180,7 +180,7 @@ export class TransactionsService {
   async computeBalance(accountId: string, tx?: Prisma.TransactionClient) {
     const {
       _sum: { amount },
-    } = await (this.prisma ?? tx).ledgerEntry.aggregate({
+    } = await (tx ?? this.prisma).ledgerEntry.aggregate({
       _sum: { amount: true },
       where: { accountId },
     });

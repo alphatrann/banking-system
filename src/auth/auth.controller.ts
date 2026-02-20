@@ -11,7 +11,7 @@ import {
 import { AuthService } from './auth.service';
 import { JwtAuthGuard, LocalAuthGuard } from './guards';
 import { CurrentUser } from '../users/decorators';
-import { type Account } from '../generated/prisma/client';
+import { type Account } from '@prisma/client';
 import { CreateAccountDto } from '../users/dto/create-account.dto';
 
 @Controller('auth')

@@ -1,0 +1,1 @@
+yarn migrate:reset:test && yarn test:e2e
