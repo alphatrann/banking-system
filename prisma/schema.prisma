@@ -20,6 +20,7 @@ model Account {
   ledgerEntries   LedgerEntry[]
   idempotencyKeys IdempotencyKey[]
   webhooks        WebhookEndpoint[]
+  emailEvents     EmailEvent[]
 
   @@map("accounts")
 }
@@ -55,15 +56,20 @@ model OutboxEvent {
   eventType     String            @map("event_type")
   payload       Json
   status        OutboxEventStatus @default(Pending)
+  nextRetryAt   DateTime?         @map("next_retry_at")
+  attemptCount  Int               @default(0) @map("attempt_count")
   createdAt     DateTime          @default(now()) @map("created_at")
   processedAt   DateTime?         @map("processed_at")
 
+  @@unique([aggregateId, eventType])
   @@map("outbox_events")
 }
 
 enum OutboxEventStatus {
   Pending
+  Processing
   Delivered
+  Failed
 }
 
 model WebhookEndpoint {
@@ -79,15 +85,31 @@ model WebhookEndpoint {
   @@map("webhook_endpoints")
 }
 
-model WebhookEvent {
-  id           String             @id @default(ulid())
-  endpointId   String             @map("endpoint_id")
-  eventType    String             @map("event_type")
+model EmailEvent {
+  id           String      @id
+  toAccountId  String      @map("to_account_id")
+  receiptId    String      @map("receipt_id")
   payload      Json
-  status       WebhookEventStatus @default(Pending)
-  nextRetryAt  DateTime?          @map("next_retry_at")
-  attemptCount Int                @default(0) @map("attempt_count")
-  createdAt    DateTime           @default(now()) @map("created_at")
+  status       EventStatus @default(Pending)
+  nextRetryAt  DateTime?   @map("next_retry_at")
+  attemptCount Int         @default(0) @map("attempt_count")
+
+  toAccount Account @relation(fields: [toAccountId], references: [id])
+  receipt   Receipt @relation(fields: [receiptId], references: [fileId])
+
+  sentAt    DateTime
+  createdAt DateTime @default(now())
+}
+
+model WebhookEvent {
+  id           String      @id
+  endpointId   String      @map("endpoint_id")
+  eventType    String      @map("event_type")
+  payload      Json
+  status       EventStatus @default(Pending)
+  nextRetryAt  DateTime?   @map("next_retry_at")
+  attemptCount Int         @default(0) @map("attempt_count")
+  createdAt    DateTime    @default(now()) @map("created_at")
 
   endpoint WebhookEndpoint  @relation(fields: [endpointId], references: [id])
   attempts WebhookAttempt[]
@@ -95,7 +117,7 @@ model WebhookEvent {
   @@map("webhook_events")
 }
 
-enum WebhookEventStatus {
+enum EventStatus {
   Pending
   Delivered
   Failed
@@ -149,6 +171,7 @@ model Receipt {
 
   file        File         @relation(fields: [fileId], references: [id])
   transaction Transaction? @relation(fields: [transactionId], references: [id])
+  emailEvents EmailEvent[]
 
   @@map("receipts")
 }

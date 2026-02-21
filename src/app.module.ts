@@ -11,7 +11,6 @@ import { Keyv } from 'keyv';
 import { CacheableMemory } from 'cacheable';
 import { MailModule } from './mail/mail.module';
 import { UsersModule } from './users/accounts.module';
-import { ScheduleModule } from '@nestjs/schedule';
 import { TransactionsModule } from './transactions/transactions.module';
 
 @Module({
@@ -31,7 +30,6 @@ import { TransactionsModule } from './transactions/transactions.module';
         MAIL_TRANSPORT: Joi.string().uri().required(),
       }),
     }),
-    ScheduleModule.forRoot(),
     CacheModule.registerAsync({
       isGlobal: true,
       imports: [ConfigModule],
