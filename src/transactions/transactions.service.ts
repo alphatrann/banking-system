@@ -13,8 +13,10 @@ import { Prisma } from '@prisma/client';
 import {
   isForeignKeyViolation,
   isSerializationFailure,
+  isUniqueViolation,
 } from '../prisma/error-codes';
 import { BASE_ACCOUNT_AMOUNT } from '../constants';
+import { EventType, QueueName } from '../queues/enums';
 
 @Injectable()
 export class TransactionsService {
@@ -25,49 +27,9 @@ export class TransactionsService {
   async transferMoney(
     dto: CreateTransactionDto,
     idempotencyKey: string,
-    ownerAccountId: string,
+    fromAccountId: string,
   ) {
     const requestHash = this.hashRequest(idempotencyKey, dto);
-
-    // 1️⃣ Create or validate idempotency key (outside tx)
-    const existing = await this.prisma.idempotencyKey.findUnique({
-      where: {
-        accountId_key: { accountId: ownerAccountId, key: idempotencyKey },
-      },
-    });
-
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        throw new BadRequestException({
-          statusCode: HttpStatus.BAD_REQUEST,
-          error: 'Idempotency key reused with different payload',
-          transaction: null,
-        });
-      }
-
-      if (existing.responseCode && existing.responseBody) {
-        if (existing.responseCode !== HttpStatus.CREATED)
-          throw new HttpException(
-            existing.responseBody as object,
-            existing.responseCode,
-          );
-
-        return existing.responseBody;
-      }
-
-      throw new ConflictException({
-        statusCode: HttpStatus.CONFLICT,
-        error: 'Request is still processing',
-      });
-    }
-
-    await this.prisma.idempotencyKey.create({
-      data: {
-        accountId: ownerAccountId,
-        key: idempotencyKey,
-        requestHash,
-      },
-    });
 
     let responseBody: any;
 
@@ -78,44 +40,24 @@ export class TransactionsService {
       attempt++
     ) {
       try {
-        responseBody = await this.prisma.$transaction(
+        await this.prisma.$transaction(
           async (tx) => {
-            const fromBalance = await this.computeBalance(ownerAccountId, tx);
-
-            if (dto.amount > fromBalance) {
-              throw new BadRequestException({
-                statusCode: HttpStatus.BAD_REQUEST,
-                error: 'Insufficient balance',
-              });
-            }
-
-            const transactionId = generateId('trans');
-
-            const toBalance = await this.computeBalance(dto.toAccountId, tx);
-
-            const transaction = await tx.transaction.create({
+            await tx.idempotencyKey.create({
               data: {
-                id: transactionId,
-                ledgerEntries: {
-                  createMany: {
-                    data: [
-                      {
-                        accountId: ownerAccountId,
-                        amount: -dto.amount,
-                        runningBalance: fromBalance - dto.amount,
-                      },
-                      {
-                        accountId: dto.toAccountId,
-                        amount: dto.amount,
-                        runningBalance: toBalance + dto.amount,
-                      },
-                    ],
-                  },
-                },
+                accountId: fromAccountId,
+                key: idempotencyKey,
+                requestHash,
               },
             });
+            const transaction = await this.handleTransaction(
+              fromAccountId,
+              tx,
+              dto,
+            );
 
-            return {
+            await this.insertOutbox(transaction, dto, fromAccountId, tx);
+
+            responseBody = {
               statusCode: HttpStatus.CREATED,
               transaction: {
                 id: transaction.id,
@@ -123,6 +65,12 @@ export class TransactionsService {
                 createdAt: transaction.createdAt.toISOString(),
               },
             };
+            await this.updateIdempotencyKey(
+              fromAccountId,
+              idempotencyKey,
+              responseBody,
+              tx,
+            );
           },
           {
             isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -131,6 +79,39 @@ export class TransactionsService {
 
         break;
       } catch (error: any) {
+        if (isUniqueViolation(error)) {
+          const existing = await this.prisma.idempotencyKey.findUnique({
+            where: {
+              accountId_key: { accountId: fromAccountId, key: idempotencyKey },
+            },
+          });
+
+          if (existing) {
+            if (existing.requestHash !== requestHash) {
+              throw new BadRequestException({
+                statusCode: HttpStatus.BAD_REQUEST,
+                error: 'Idempotency key reused with different payload',
+                transaction: null,
+              });
+            }
+
+            if (existing.responseCode && existing.responseBody) {
+              if (existing.responseCode !== HttpStatus.CREATED)
+                throw new HttpException(
+                  existing.responseBody as object,
+                  existing.responseCode,
+                );
+
+              return existing.responseBody;
+            }
+          }
+
+          throw new ConflictException({
+            statusCode: HttpStatus.CONFLICT,
+            error: 'Request is still processing',
+          });
+        }
+
         if (
           isSerializationFailure(error) &&
           attempt < this.MAX_SERIALIZATION_RETRIES
@@ -159,22 +140,134 @@ export class TransactionsService {
       }
     }
 
-    // 3️⃣ Update idempotency AFTER tx finishes (safe)
-    await this.prisma.idempotencyKey.update({
+    if (responseBody.statusCode !== HttpStatus.CREATED) {
+      await this.updateIdempotencyKey(
+        fromAccountId,
+        idempotencyKey,
+        responseBody,
+      );
+      throw new HttpException(responseBody, responseBody.statusCode);
+    }
+
+    return responseBody;
+  }
+
+  private async updateIdempotencyKey(
+    fromAccountId: string,
+    idempotencyKey: string,
+    responseBody: any,
+    tx?: Prisma.TransactionClient,
+  ) {
+    await (tx ?? this.prisma).idempotencyKey.update({
       where: {
-        accountId_key: { accountId: ownerAccountId, key: idempotencyKey },
+        accountId_key: {
+          accountId: fromAccountId,
+          key: idempotencyKey,
+        },
       },
       data: {
         responseBody,
         responseCode: responseBody.statusCode,
       },
     });
+  }
 
-    if (responseBody.statusCode !== HttpStatus.CREATED) {
-      throw new HttpException(responseBody, responseBody.statusCode);
+  private async insertOutbox(
+    transaction: { id: string; createdAt: Date },
+    dto: CreateTransactionDto,
+    fromAccountId: string,
+    tx: Prisma.TransactionClient,
+  ) {
+    const receiptGeneratorId = generateId('rec');
+    const analyticsTrackerId = generateId('anl');
+    const webhookSenderId = generateId('whk');
+    const webhookReceiverId = generateId('whk');
+    const jobs: Prisma.OutboxEventCreateManyInput[] = [
+      {
+        id: receiptGeneratorId,
+        aggregateId: `${transaction.id}:${EventType.GenerateReceipts}`,
+        aggregateType: QueueName.Receipts,
+        eventType: EventType.GenerateReceipts,
+        payload: {
+          transactionId: transaction.id,
+          amount: dto.amount,
+          fromAccountId,
+          toAccountId: dto.toAccountId,
+          createdAt: transaction.createdAt.toISOString(),
+        },
+      },
+      {
+        id: analyticsTrackerId,
+        aggregateId: `${transaction.id}:${EventType.TrackAnalytics}`,
+        aggregateType: QueueName.Analytics,
+        eventType: EventType.TrackAnalytics,
+        payload: { transactionId: transaction.id },
+      },
+      {
+        id: webhookSenderId,
+        aggregateId: `${transaction.id}:${EventType.SendWebhooks}:${fromAccountId}`,
+        aggregateType: QueueName.Webhooks,
+        eventType: EventType.SendWebhooks,
+        payload: { transactionId: transaction.id, fromAccountId },
+      },
+      {
+        id: webhookReceiverId,
+        aggregateId: `${transaction.id}:${EventType.SendWebhooks}:${dto.toAccountId}`,
+        aggregateType: QueueName.Webhooks,
+        eventType: EventType.SendWebhooks,
+        payload: {
+          transactionId: transaction.id,
+          toAccountId: dto.toAccountId,
+        },
+      },
+    ];
+
+    await tx.outboxEvent.createMany({ data: jobs });
+    await tx.$executeRawUnsafe(`
+      NOTIFY outbox_channel
+    `);
+  }
+
+  private async handleTransaction(
+    fromAccountId: string,
+    tx: Prisma.TransactionClient,
+    dto: CreateTransactionDto,
+  ) {
+    const fromBalance = await this.computeBalance(fromAccountId, tx);
+
+    if (dto.amount > fromBalance) {
+      throw new BadRequestException({
+        statusCode: HttpStatus.BAD_REQUEST,
+        error: 'Insufficient balance',
+      });
     }
 
-    return responseBody;
+    const transactionId = generateId('trans');
+
+    const toBalance = await this.computeBalance(dto.toAccountId, tx);
+
+    const transaction = await tx.transaction.create({
+      data: {
+        id: transactionId,
+        ledgerEntries: {
+          createMany: {
+            data: [
+              {
+                accountId: fromAccountId,
+                amount: -dto.amount,
+                runningBalance: fromBalance - dto.amount,
+              },
+              {
+                accountId: dto.toAccountId,
+                amount: dto.amount,
+                runningBalance: toBalance + dto.amount,
+              },
+            ],
+          },
+        },
+      },
+    });
+    return transaction;
   }
 
   async computeBalance(accountId: string, tx?: Prisma.TransactionClient) {
