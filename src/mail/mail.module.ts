@@ -13,9 +13,6 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
       inject: [ConfigService],
       useFactory: async (config: ConfigService) => ({
         transport: config.getOrThrow('MAIL_TRANSPORT'),
-        defaults: {
-          from: `"No Reply" <${config.getOrThrow('MAIL_FROM')}>`,
-        },
         template: {
           dir: join(__dirname, 'templates'),
           adapter: new HandlebarsAdapter(),

@@ -39,7 +39,7 @@ model LedgerEntry {
   transactionId  String   @map("transaction_id")
   accountId      String   @map("account_id")
   amount         BigInt // Positive or negative
-  runningBalance BigInt?  @map("running_balance")
+  runningBalance BigInt   @map("running_balance")
   createdAt      DateTime @default(now()) @map("created_at")
 
   transaction Transaction @relation(fields: [transactionId], references: [id])
@@ -54,7 +54,7 @@ model OutboxEvent {
   aggregateType String            @map("aggregate_type")
   aggregateId   String            @map("aggregate_id")
   eventType     String            @map("event_type")
-  payload       Json
+  payload       Json              @db.JsonB
   status        OutboxEventStatus @default(Pending)
   nextRetryAt   DateTime?         @map("next_retry_at")
   attemptCount  Int               @default(0) @map("attempt_count")
@@ -88,24 +88,23 @@ model WebhookEndpoint {
 model EmailEvent {
   id           String      @id
   toAccountId  String      @map("to_account_id")
-  receiptId    String      @map("receipt_id")
-  payload      Json
+  payload      Json        @db.JsonB
   status       EventStatus @default(Pending)
-  nextRetryAt  DateTime?   @map("next_retry_at")
   attemptCount Int         @default(0) @map("attempt_count")
 
   toAccount Account @relation(fields: [toAccountId], references: [id])
-  receipt   Receipt @relation(fields: [receiptId], references: [fileId])
 
-  sentAt    DateTime
-  createdAt DateTime @default(now())
+  sentAt    DateTime? @map("sent_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("email_event")
 }
 
 model WebhookEvent {
   id           String      @id
   endpointId   String      @map("endpoint_id")
   eventType    String      @map("event_type")
-  payload      Json
+  payload      Json        @db.JsonB
   status       EventStatus @default(Pending)
   nextRetryAt  DateTime?   @map("next_retry_at")
   attemptCount Int         @default(0) @map("attempt_count")
@@ -119,7 +118,8 @@ model WebhookEvent {
 
 enum EventStatus {
   Pending
-  Delivered
+  Processing
+  Done
   Failed
 }
 
@@ -127,7 +127,7 @@ model WebhookAttempt {
   id             String   @id @default(ulid())
   webhookEventId String   @map("webhook_event_id")
   responseStatus Int      @map("response_status")
-  responseBody   String?  @map("response_body")
+  responseBody   Json     @map("response_body") @db.JsonB
   durationMs     Int      @map("duration_ms")
   createdAt      DateTime @default(now()) @map("created_at")
 
@@ -137,17 +137,23 @@ model WebhookAttempt {
 }
 
 model IdempotencyKey {
-  accountId    String   @map("account_id")
+  accountId    String            @map("account_id")
   key          String
-  requestHash  String   @map("request_hash")
-  responseCode Int?     @map("response_code")
-  responseBody Json?    @map("response_body")
-  createdAt    DateTime @default(now()) @map("created_at")
+  requestHash  String            @map("request_hash")
+  status       IdempotencyStatus @default(Processing)
+  responseCode Int?              @map("response_code")
+  responseBody Json              @map("response_body") @db.JsonB
+  createdAt    DateTime          @default(now()) @map("created_at")
 
   account Account @relation(fields: [accountId], references: [id])
 
   @@id([accountId, key])
   @@map("idempotency_keys")
+}
+
+enum IdempotencyStatus {
+  Processing
+  Completed
 }
 
 model File {
@@ -165,13 +171,18 @@ model File {
 }
 
 model Receipt {
-  fileId        String   @id @map("file_id")
-  transactionId String?  @unique @map("transaction_id")
+  id            String   @id
+  number        BigInt   @unique @default(autoincrement())
+  fileId        String?  @unique @map("file_id")
+  transactionId String   @unique @map("transaction_id")
   createdAt     DateTime @default(now()) @map("created_at")
 
-  file        File         @relation(fields: [fileId], references: [id])
-  transaction Transaction? @relation(fields: [transactionId], references: [id])
-  emailEvents EmailEvent[]
+  file         File?       @relation(fields: [fileId], references: [id])
+  transaction  Transaction @relation(fields: [transactionId], references: [id])
+  status       EventStatus @default(Pending)
+  generatedAt  DateTime?   @map("generated_at")
+  failedAt     DateTime?   @map("failed_at")
+  failedReason String?     @map("failed_reason")
 
   @@map("receipts")
 }

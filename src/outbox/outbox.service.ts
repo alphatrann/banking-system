@@ -4,8 +4,8 @@ import { OutboxEventStatus } from '@prisma/client';
 import { EventType, QueueName } from '../queues/enums';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { sleep } from '../utils/timer';
 import { OUTBOX_MAX_ATTEMPTS } from '../constants';
+import { simulateError } from '../utils/simulation';
 
 @Injectable()
 export class OutboxService {
@@ -50,18 +50,27 @@ export class OutboxService {
     const enqueues = toEnqueueJobs.map(async (job) => {
       console.log('Enqueueing job:', job);
       try {
+        simulateError(0.5);
         switch (job.event_type) {
           case EventType.SendWebhooks:
-            await this.webhooksQueue.add(job.event_type, job.payload);
+            await this.webhooksQueue.add(job.event_type, job.payload, {
+              jobId: job.id,
+            });
             break;
           case EventType.TrackAnalytics:
-            await this.analyticsQueue.add(job.event_type, job.payload);
+            await this.analyticsQueue.add(job.event_type, job.payload, {
+              jobId: job.id,
+            });
             break;
           case EventType.SendEmails:
-            await this.emailsQueue.add(job.event_type, job.payload);
+            await this.emailsQueue.add(job.event_type, job.payload, {
+              jobId: job.id,
+            });
             break;
           case EventType.GenerateReceipts:
-            await this.receiptsQueue.add(job.event_type, job.payload);
+            await this.receiptsQueue.add(job.event_type, job.payload, {
+              jobId: job.id,
+            });
             break;
           default:
             console.warn('Skipped due to unknown event type', job.event_type);

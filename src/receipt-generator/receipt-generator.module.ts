@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
-import { QueuesModule } from '../queues/queues.module';
-import { OutboxService } from './outbox.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ConfigModule } from '@nestjs/config';
 import Joi from 'joi';
+import { MailModule } from '../mail/mail.module';
+import { QueuesModule } from '../queues/queues.module';
+import { ReceiptGenerator } from './receipt-generator';
+import { ReceiptsModule } from '../receipts/receipts.module';
 
 @Module({
   imports: [
@@ -17,12 +19,14 @@ import Joi from 'joi';
             : '.env.development.local',
       validationSchema: Joi.object({
         DATABASE_URL: Joi.string().required(),
-        CACHE_URL: Joi.string().uri().required(),
+        MAIL_TRANSPORT: Joi.string().uri().required(),
       }),
     }),
-    QueuesModule,
     PrismaModule,
+    QueuesModule,
+    MailModule,
+    ReceiptsModule,
   ],
-  providers: [OutboxService],
+  providers: [ReceiptGenerator],
 })
-export class OutboxModule {}
+export class ReceiptGeneratorModule {}
