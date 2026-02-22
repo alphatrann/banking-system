@@ -1,8 +1,13 @@
+import { JobsOptions } from 'bullmq';
+
 export enum QueueName {
   Webhooks = 'webhooks',
   Analytics = 'analytics',
   Emails = 'emails',
   Receipts = 'receipts',
+}
+
+export enum DLQName {
   WebhooksDLQ = 'webhooks.dlq',
   AnalyticsDLQ = 'analytics.dlq',
   EmailsDLQ = 'emails.dlq',
@@ -16,15 +21,21 @@ export enum EventType {
   GenerateReceipts = 'receipts.generate',
 }
 
-export function getEventQueue(eventType: EventType, isDLQ = false) {
-  switch (eventType) {
-    case EventType.GenerateReceipts:
-      return isDLQ ? QueueName.ReceiptsDLQ : QueueName.Receipts;
-    case EventType.SendEmails:
-      return isDLQ ? QueueName.EmailsDLQ : QueueName.Emails;
-    case EventType.SendWebhooks:
-      return isDLQ ? QueueName.WebhooksDLQ : QueueName.Webhooks;
-    case EventType.TrackAnalytics:
-      return isDLQ ? QueueName.AnalyticsDLQ : QueueName.Analytics;
+export function getQueueJobOptions(queueName: QueueName): JobsOptions {
+  switch (queueName) {
+    case QueueName.Webhooks:
+      return {}; // open-circuit / respect Retry-After dynamically
+    case QueueName.Emails:
+      return {
+        attempts: 10,
+        backoff: { jitter: 0.5, type: 'exponential', delay: 5000 },
+      };
+    case QueueName.Receipts:
+      return { attempts: 20, backoff: { type: 'fixed', delay: 5000 } };
+    case QueueName.Analytics:
+      return {
+        attempts: 10,
+        backoff: { jitter: 0.5, type: 'exponential', delay: 1000 },
+      };
   }
 }

@@ -9,14 +9,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { generateId } from '../utils/id';
 import { hash } from '../utils/hash';
-import { Prisma } from '@prisma/client';
+import { IdempotencyStatus, Prisma, EventStatus } from '@prisma/client';
 import {
   isForeignKeyViolation,
   isSerializationFailure,
   isUniqueViolation,
 } from '../prisma/error-codes';
 import { BASE_ACCOUNT_AMOUNT } from '../constants';
-import { EventType, QueueName } from '../queues/enums';
+import { buildFailureOutboxJobs, buildSuccessOutboxJobs } from '../utils/jobs';
 
 @Injectable()
 export class TransactionsService {
@@ -33,7 +33,57 @@ export class TransactionsService {
 
     let responseBody: any;
 
-    // 2️⃣ Run financial logic with SERIALIZABLE retry
+    // ===============================
+    // PHASE 1 — Idempotency Lock
+    // ===============================
+    try {
+      await this.prisma.idempotencyKey.create({
+        data: {
+          accountId: fromAccountId,
+          key: idempotencyKey,
+          requestHash,
+          status: IdempotencyStatus.Processing,
+          responseBody: {},
+        },
+      });
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+
+      const existing = await this.prisma.idempotencyKey.findUnique({
+        where: {
+          accountId_key: { accountId: fromAccountId, key: idempotencyKey },
+        },
+      });
+
+      if (!existing) {
+        throw new ConflictException('Race condition detected');
+      }
+
+      if (existing.requestHash !== requestHash) {
+        throw new BadRequestException(
+          'Idempotency key reused with different payload',
+        );
+      }
+
+      // If already completed → replay
+      if (existing.status === IdempotencyStatus.Completed) {
+        if (existing.responseCode !== HttpStatus.CREATED) {
+          throw new HttpException(
+            existing.responseBody as object,
+            existing.responseCode!,
+          );
+        }
+
+        return existing.responseBody;
+      }
+
+      throw new ConflictException('Request is still processing');
+    }
+
+    // ===============================
+    // PHASE 2 — Financial Logic
+    // ===============================
+
     for (
       let attempt = 1;
       attempt <= this.MAX_SERIALIZATION_RETRIES;
@@ -42,20 +92,20 @@ export class TransactionsService {
       try {
         await this.prisma.$transaction(
           async (tx) => {
-            await tx.idempotencyKey.create({
-              data: {
-                accountId: fromAccountId,
-                key: idempotencyKey,
-                requestHash,
-              },
-            });
             const transaction = await this.handleTransaction(
               fromAccountId,
               tx,
               dto,
             );
 
-            await this.insertOutbox(transaction, dto, fromAccountId, tx);
+            const { number } = await tx.receipt.create({
+              data: {
+                transactionId: transaction.id,
+                id: generateId('rec'),
+                status: EventStatus.Pending,
+              },
+              select: { number: true },
+            });
 
             responseBody = {
               statusCode: HttpStatus.CREATED,
@@ -65,10 +115,9 @@ export class TransactionsService {
                 createdAt: transaction.createdAt.toISOString(),
               },
             };
-            await this.updateIdempotencyKey(
-              fromAccountId,
-              idempotencyKey,
-              responseBody,
+
+            await this.insertOutbox(
+              buildSuccessOutboxJobs(transaction.id, Number(number)),
               tx,
             );
           },
@@ -79,73 +128,47 @@ export class TransactionsService {
 
         break;
       } catch (error: any) {
-        if (isUniqueViolation(error)) {
-          const existing = await this.prisma.idempotencyKey.findUnique({
-            where: {
-              accountId_key: { accountId: fromAccountId, key: idempotencyKey },
-            },
-          });
-
-          if (existing) {
-            if (existing.requestHash !== requestHash) {
-              throw new BadRequestException({
-                statusCode: HttpStatus.BAD_REQUEST,
-                error: 'Idempotency key reused with different payload',
-                transaction: null,
-              });
-            }
-
-            if (existing.responseCode && existing.responseBody) {
-              if (existing.responseCode !== HttpStatus.CREATED)
-                throw new HttpException(
-                  existing.responseBody as object,
-                  existing.responseCode,
-                );
-
-              return existing.responseBody;
-            }
-          }
-
-          throw new ConflictException({
-            statusCode: HttpStatus.CONFLICT,
-            error: 'Request is still processing',
-          });
-        }
-
         if (
           isSerializationFailure(error) &&
           attempt < this.MAX_SERIALIZATION_RETRIES
         ) {
           continue;
-        }
-
-        if (error instanceof BadRequestException) {
-          responseBody = error.getResponse() as any;
-          break;
-        }
-
-        if (isForeignKeyViolation(error)) {
+        } else if (error instanceof BadRequestException) {
+          return error.getResponse();
+        } else if (isForeignKeyViolation(error)) {
           responseBody = {
             statusCode: HttpStatus.NOT_FOUND,
             error: "Destination account doesn't exist.",
           };
-          break;
+        } else {
+          responseBody = {
+            statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+            error: 'Internal error while processing transaction',
+          };
         }
-
-        responseBody = {
-          statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-          error: 'Internal error while processing transaction',
-        };
         break;
       }
     }
 
-    if (responseBody.statusCode !== HttpStatus.CREATED) {
+    // ===============================
+    // PHASE 3 — Finalize
+    // ===============================
+
+    await this.prisma.$transaction(async (tx) => {
+      if (responseBody.statusCode !== HttpStatus.CREATED) {
+        await this.insertOutbox(buildFailureOutboxJobs(), tx);
+      }
+
       await this.updateIdempotencyKey(
         fromAccountId,
         idempotencyKey,
         responseBody,
+        IdempotencyStatus.Completed,
+        tx,
       );
+    });
+
+    if (responseBody.statusCode !== HttpStatus.CREATED) {
       throw new HttpException(responseBody, responseBody.statusCode);
     }
 
@@ -153,19 +176,21 @@ export class TransactionsService {
   }
 
   private async updateIdempotencyKey(
-    fromAccountId: string,
+    accountId: string,
     idempotencyKey: string,
     responseBody: any,
+    status: IdempotencyStatus,
     tx?: Prisma.TransactionClient,
   ) {
     await (tx ?? this.prisma).idempotencyKey.update({
       where: {
         accountId_key: {
-          accountId: fromAccountId,
+          accountId,
           key: idempotencyKey,
         },
       },
       data: {
+        status,
         responseBody,
         responseCode: responseBody.statusCode,
       },
@@ -173,59 +198,22 @@ export class TransactionsService {
   }
 
   private async insertOutbox(
-    transaction: { id: string; createdAt: Date },
-    dto: CreateTransactionDto,
-    fromAccountId: string,
-    tx: Prisma.TransactionClient,
+    jobs: Prisma.OutboxEventCreateManyInput[],
+    tx?: Prisma.TransactionClient,
   ) {
-    const receiptGeneratorId = generateId('rec');
-    const analyticsTrackerId = generateId('anl');
-    const webhookSenderId = generateId('whk');
-    const webhookReceiverId = generateId('whk');
-    const jobs: Prisma.OutboxEventCreateManyInput[] = [
-      {
-        id: receiptGeneratorId,
-        aggregateId: `${transaction.id}:${EventType.GenerateReceipts}`,
-        aggregateType: QueueName.Receipts,
-        eventType: EventType.GenerateReceipts,
-        payload: {
-          transactionId: transaction.id,
-          amount: dto.amount,
-          fromAccountId,
-          toAccountId: dto.toAccountId,
-          createdAt: transaction.createdAt.toISOString(),
-        },
-      },
-      {
-        id: analyticsTrackerId,
-        aggregateId: `${transaction.id}:${EventType.TrackAnalytics}`,
-        aggregateType: QueueName.Analytics,
-        eventType: EventType.TrackAnalytics,
-        payload: { transactionId: transaction.id },
-      },
-      {
-        id: webhookSenderId,
-        aggregateId: `${transaction.id}:${EventType.SendWebhooks}:${fromAccountId}`,
-        aggregateType: QueueName.Webhooks,
-        eventType: EventType.SendWebhooks,
-        payload: { transactionId: transaction.id, fromAccountId },
-      },
-      {
-        id: webhookReceiverId,
-        aggregateId: `${transaction.id}:${EventType.SendWebhooks}:${dto.toAccountId}`,
-        aggregateType: QueueName.Webhooks,
-        eventType: EventType.SendWebhooks,
-        payload: {
-          transactionId: transaction.id,
-          toAccountId: dto.toAccountId,
-        },
-      },
-    ];
-
-    await tx.outboxEvent.createMany({ data: jobs });
-    await tx.$executeRawUnsafe(`
+    if (tx) {
+      await tx.outboxEvent.createMany({ data: jobs });
+      await tx.$executeRawUnsafe(`
       NOTIFY outbox_channel
     `);
+    } else {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.outboxEvent.createMany({ data: jobs });
+        await tx.$executeRawUnsafe(`
+      NOTIFY outbox_channel
+    `);
+      });
+    }
   }
 
   private async handleTransaction(
@@ -242,7 +230,7 @@ export class TransactionsService {
       });
     }
 
-    const transactionId = generateId('trans');
+    const transactionId = generateId('txn');
 
     const toBalance = await this.computeBalance(dto.toAccountId, tx);
 

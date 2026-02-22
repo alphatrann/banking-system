@@ -1,27 +1,38 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { QueueName } from './enums';
+import { DLQName, getQueueJobOptions, QueueName } from './enums';
 
 @Module({
   imports: [
-    ...Object.values(QueueName).map((name) =>
-      BullModule.registerQueue({
-        name,
-        defaultJobOptions: {
-          removeOnComplete: true,
-          removeOnFail: false,
-        },
-      }),
-    ),
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         connection: {
           url: configService.get('CACHE_URL'),
         },
+        prefix: configService.get('NODE_ENV'),
       }),
     }),
+    ...Object.values(QueueName).map((name) =>
+      BullModule.registerQueue({
+        name,
+        defaultJobOptions: {
+          ...getQueueJobOptions(name),
+          removeOnComplete: { age: 3600 }, // keep 1 hour
+          removeOnFail: { age: 86400 }, // keep 1 day
+        },
+        // }),
+      }),
+    ),
+    ...Object.values(DLQName).map((name) =>
+      BullModule.registerQueue({
+        name,
+        defaultJobOptions: {
+          removeOnFail: false,
+        },
+      }),
+    ),
   ],
   exports: [BullModule],
 })
