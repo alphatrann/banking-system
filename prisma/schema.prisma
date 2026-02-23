@@ -73,11 +73,13 @@ enum OutboxEventStatus {
 }
 
 model WebhookEndpoint {
-  id        String  @id @default(ulid())
-  accountId String  @map("account_id")
-  url       String
-  secret    String
-  active    Boolean @default(true)
+  id               String    @id @default(ulid())
+  accountId        String    @map("account_id")
+  url              String
+  secret           String
+  active           Boolean   @default(true)
+  subscribedEvents String[]  @map("subscribed_events")
+  deletedAt        DateTime?
 
   account Account        @relation(fields: [accountId], references: [id])
   events  WebhookEvent[]
@@ -163,7 +165,6 @@ model File {
   bucket    String
   object    String
   size      BigInt
-  iv        String
   mimetype  String
   createdAt DateTime @default(now()) @map("created_at")
   receipt   Receipt?

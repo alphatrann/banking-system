@@ -86,7 +86,6 @@ export class ReceiptsService {
         object: objectName,
         size: buffer.length,
         mimetype: 'application/pdf',
-        iv: randomBytes(16).toString('base64'),
         receipt: {
           connect: { number: receiptNumber },
         },
