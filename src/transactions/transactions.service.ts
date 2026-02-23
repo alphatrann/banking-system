@@ -17,12 +17,17 @@ import {
 } from '../prisma/error-codes';
 import { BASE_ACCOUNT_AMOUNT } from '../constants';
 import { buildFailureOutboxJobs, buildSuccessOutboxJobs } from '../utils/jobs';
+import { WebhooksService } from '../webhooks/webhooks.service';
+import { WebhookEventType } from '../webhooks/enums';
 
 @Injectable()
 export class TransactionsService {
   private readonly MAX_SERIALIZATION_RETRIES = 3;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly webhooksService: WebhooksService,
+  ) {}
 
   async transferMoney(
     dto: CreateTransactionDto,
@@ -116,8 +121,31 @@ export class TransactionsService {
               },
             };
 
+            const fromWebhookEndpointIds =
+              await this.webhooksService.findRegisteredEndpointIds(
+                WebhookEventType.TransferCompleted,
+                fromAccountId,
+                tx,
+              );
+            const toWebhookEndpointIds =
+              await this.webhooksService.findRegisteredEndpointIds(
+                WebhookEventType.TransferCompleted,
+                dto.toAccountId,
+                tx,
+              );
+
             await this.insertOutbox(
-              buildSuccessOutboxJobs(transaction.id, Number(number)),
+              buildSuccessOutboxJobs(
+                {
+                  fromAccountId,
+                  ...dto,
+                  occurredAt: transaction.createdAt.toISOString(),
+                  currency: 'USD',
+                  id: transaction.id,
+                },
+                Number(number),
+                [...fromWebhookEndpointIds, ...toWebhookEndpointIds],
+              ),
               tx,
             );
           },
@@ -156,7 +184,34 @@ export class TransactionsService {
 
     await this.prisma.$transaction(async (tx) => {
       if (responseBody.statusCode !== HttpStatus.CREATED) {
-        await this.insertOutbox(buildFailureOutboxJobs(), tx);
+        const fromWebhookEndpointIds =
+          await this.webhooksService.findRegisteredEndpointIds(
+            WebhookEventType.TransferCompleted,
+            fromAccountId,
+            tx,
+          );
+        const toWebhookEndpointIds =
+          responseBody.statusCode === HttpStatus.NOT_FOUND
+            ? []
+            : await this.webhooksService.findRegisteredEndpointIds(
+                WebhookEventType.TransferCompleted,
+                dto.toAccountId,
+                tx,
+              );
+        await this.insertOutbox(
+          buildFailureOutboxJobs(
+            {
+              ...dto,
+              currency: 'USD',
+              fromAccountId,
+              occurredAt: new Date().toISOString(),
+            },
+            [...fromWebhookEndpointIds, ...toWebhookEndpointIds],
+            responseBody.statusCode,
+            responseBody.error,
+          ),
+          tx,
+        );
       }
 
       await this.updateIdempotencyKey(

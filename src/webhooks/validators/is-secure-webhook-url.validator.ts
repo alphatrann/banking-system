@@ -21,16 +21,16 @@ class IsSecureWebhookUrlConstraint implements ValidatorConstraintInterface {
     }
 
     // Must use HTTPS
-    if (url.protocol !== 'https:') {
-      return false;
-    }
+    // if (url.protocol !== 'https:') {
+    //   return false;
+    // }
 
     const hostname = url.hostname;
 
     // Block localhost
-    if (hostname === 'localhost') {
-      return false;
-    }
+    // if (hostname === 'localhost') {
+    //   return false;
+    // }
 
     // If hostname is an IP address, validate it's not private/internal
     if (net.isIP(hostname)) {

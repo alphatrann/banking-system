@@ -6,6 +6,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { OUTBOX_MAX_ATTEMPTS } from '../constants';
 import { simulateError } from '../utils/simulation';
+import { WebhookEventType } from '../webhooks/enums';
 
 @Injectable()
 export class OutboxService {
@@ -22,7 +23,7 @@ export class OutboxService {
       const pendingJobs = await tx.$queryRaw<
         {
           id: string;
-          event_type: EventType;
+          event_type: EventType | WebhookEventType;
           attempt_count: number;
           payload: object;
         }[]
@@ -51,7 +52,9 @@ export class OutboxService {
       console.log('Enqueueing job:', job);
       try {
         switch (job.event_type) {
-          case EventType.SendWebhooks:
+          case WebhookEventType.TransferCompleted:
+          case WebhookEventType.TransferFailed:
+          case WebhookEventType.ReceiptGenerated:
             await this.webhooksQueue.add(job.event_type, job.payload, {
               jobId: job.id,
             });

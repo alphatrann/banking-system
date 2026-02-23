@@ -7,5 +7,6 @@ import { PrismaModule } from '../prisma/prisma.module';
   imports: [PrismaModule],
   providers: [WebhooksService],
   controllers: [WebhooksController],
+  exports: [WebhooksService],
 })
 export class WebhooksModule {}

@@ -19,7 +19,33 @@ export interface SendEmailJobPayload extends JobPayload {
   receiptId: string;
 }
 
-export interface SendWebhookJobPayload extends JobPayload {
-  webhookEndpointId: string;
-  event: WebhookEventType;
+export interface TransactionWebhookPayload {
+  amount: number;
+  toAccountId: string;
+  fromAccountId: string;
+  currency: 'USD';
+  occurredAt: string;
 }
+export interface CompletedTransactionWebhookPayload extends TransactionWebhookPayload {
+  id: string;
+}
+export interface FailedTransactionWebhookPayload extends TransactionWebhookPayload {}
+
+export type SendWebhookJobPayload = { endpointId: string; eventId: string } & (
+  | {
+      event: WebhookEventType.TransferCompleted;
+
+      transaction: CompletedTransactionWebhookPayload;
+    }
+  | {
+      event: WebhookEventType.TransferFailed;
+      transaction: FailedTransactionWebhookPayload;
+      statusCode: number;
+      error: string;
+    }
+  | {
+      event: WebhookEventType.ReceiptGenerated;
+      receiptNumber: number;
+      transaction: CompletedTransactionWebhookPayload;
+    }
+);

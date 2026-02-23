@@ -130,7 +130,10 @@ export class MailSender extends WorkerHost {
       `Job ${job.id} failed, attempts made=${job.attemptsMade}/${job.opts.attempts}. Retry after ${job.delay}ms`,
     );
     console.error(`Reason: ${error}`);
-    if (job.attemptsMade >= job.opts.attempts!) {
+    if (
+      job.attemptsMade === job.opts.attempts! ||
+      error instanceof UnrecoverableError
+    ) {
       await this.prisma.emailEvent.updateMany({
         where: { id: job.id! },
         data: {

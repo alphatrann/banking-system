@@ -38,7 +38,7 @@ model LedgerEntry {
   id             Int      @id @default(autoincrement())
   transactionId  String   @map("transaction_id")
   accountId      String   @map("account_id")
-  amount         BigInt // Positive or negative
+  amount         BigInt
   runningBalance BigInt   @map("running_balance")
   createdAt      DateTime @default(now()) @map("created_at")
 
@@ -52,7 +52,7 @@ model LedgerEntry {
 model OutboxEvent {
   id            String            @id @default(ulid())
   aggregateType String            @map("aggregate_type")
-  aggregateId   String            @map("aggregate_id")
+  aggregateId   String            @unique @map("aggregate_id")
   eventType     String            @map("event_type")
   payload       Json              @db.JsonB
   status        OutboxEventStatus @default(Pending)
@@ -61,7 +61,6 @@ model OutboxEvent {
   createdAt     DateTime          @default(now()) @map("created_at")
   processedAt   DateTime?         @map("processed_at")
 
-  @@unique([aggregateId, eventType])
   @@map("outbox_events")
 }
 
@@ -79,7 +78,7 @@ model WebhookEndpoint {
   secret           String
   active           Boolean   @default(true)
   subscribedEvents String[]  @map("subscribed_events")
-  deletedAt        DateTime?
+  deletedAt        DateTime? @map("deleted_at")
 
   account Account        @relation(fields: [accountId], references: [id])
   events  WebhookEvent[]
@@ -110,8 +109,8 @@ model WebhookEvent {
   eventType    String      @map("event_type")
   payload      Json        @db.JsonB
   status       EventStatus @default(Pending)
-  nextRetryAt  DateTime?   @map("next_retry_at")
   attemptCount Int         @default(0) @map("attempt_count")
+  sentAt       DateTime?   @map("sent_at")
   createdAt    DateTime    @default(now()) @map("created_at")
 
   endpoint WebhookEndpoint  @relation(fields: [endpointId], references: [id])
@@ -130,8 +129,9 @@ enum EventStatus {
 model WebhookAttempt {
   id             String   @id @default(ulid())
   webhookEventId String   @map("webhook_event_id")
-  responseStatus Int      @map("response_status")
-  responseBody   Json     @map("response_body") @db.JsonB
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body") @db.JsonB
+  error          String?
   durationMs     Int      @map("duration_ms")
   createdAt      DateTime @default(now()) @map("created_at")
 

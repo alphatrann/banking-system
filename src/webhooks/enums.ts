@@ -1,5 +1,5 @@
 export enum WebhookEventType {
-  InvoiceGenerated = 'invoice.generated',
-  TransferSuccessful = 'transfer.successful',
+  ReceiptGenerated = 'receipt.generated',
+  TransferCompleted = 'transfer.completed',
   TransferFailed = 'transfer.failed',
 }
