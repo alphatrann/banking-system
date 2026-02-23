@@ -18,6 +18,19 @@ export class ReceiptsService {
     private prisma: PrismaService,
   ) {}
 
+  async getReceiptFile(receiptId: string) {
+    const {
+      bucket,
+      mimetype,
+      object: objectName,
+    } = await this.prisma.file.findFirstOrThrow({
+      where: { receipt: { id: receiptId } },
+      select: { bucket: true, object: true, mimetype: true },
+    });
+    const object = await this.minio.getObject(bucket, objectName);
+    return { object, mimetype, objectName };
+  }
+
   async generateReceipt(dto: GenerateReceiptDto) {
     const { receiptNumber } = dto;
 
@@ -61,8 +74,6 @@ export class ReceiptsService {
       { 'Content-Type': 'application/pdf' },
     );
 
-    simulateError(0.8, 'uploading PDF receipt to MinIO');
-
     /**
      * STEP 4 — Insert a file record
      */
@@ -85,7 +96,6 @@ export class ReceiptsService {
         object: objectName,
       },
     });
-    simulateError(0.8, 'adding file to db');
 
     /**
      * STEP 5 — Mark receipt Done

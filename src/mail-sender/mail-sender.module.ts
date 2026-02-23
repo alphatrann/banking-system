@@ -5,6 +5,7 @@ import Joi from 'joi';
 import { MailSender } from './mail-sender';
 import { MailModule } from '../mail/mail.module';
 import { QueuesModule } from '../queues/queues.module';
+import { ReceiptsModule } from '../receipts/receipts.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { QueuesModule } from '../queues/queues.module';
     }),
     PrismaModule,
     QueuesModule,
+    ReceiptsModule,
     MailModule,
   ],
   providers: [MailSender],

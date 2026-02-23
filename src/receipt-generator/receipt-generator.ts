@@ -13,6 +13,7 @@ import { ReceiptsService } from '../receipts/receipts.service';
 import { generateId } from '../utils/id';
 import { EventStatus, Prisma } from '@prisma/client';
 import { simulateError } from '../utils/simulation';
+import { formatError } from '../utils/formatter';
 
 @Injectable()
 @Processor(QueueName.Receipts, {
@@ -57,7 +58,7 @@ export class ReceiptGenerator extends WorkerHost {
         where: { number: job.data.receiptNumber },
         select: { id: true },
       });
-      simulateError(0.3, 'generating the receipt');
+
       await tx.outboxEvent.createMany({
         data: transaction.ledgerEntries.map((entry) => ({
           id: generateId('job'),
@@ -84,7 +85,7 @@ export class ReceiptGenerator extends WorkerHost {
         where: { number: payload.receiptNumber },
         data: {
           status: EventStatus.Failed,
-          failedReason: error.message,
+          failedReason: formatError(error),
           failedAt: new Date(),
         },
       });

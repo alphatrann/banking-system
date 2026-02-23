@@ -91,13 +91,15 @@ model EmailEvent {
   payload      Json        @db.JsonB
   status       EventStatus @default(Pending)
   attemptCount Int         @default(0) @map("attempt_count")
+  failedAt     DateTime?   @map("failed_at")
+  failedReason String?     @map("failed_reason")
 
   toAccount Account @relation(fields: [toAccountId], references: [id])
 
   sentAt    DateTime? @map("sent_at")
   createdAt DateTime  @default(now()) @map("created_at")
 
-  @@map("email_event")
+  @@map("email_events")
 }
 
 model WebhookEvent {

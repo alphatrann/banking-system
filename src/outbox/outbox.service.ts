@@ -50,7 +50,6 @@ export class OutboxService {
     const enqueues = toEnqueueJobs.map(async (job) => {
       console.log('Enqueueing job:', job);
       try {
-        simulateError(0.5);
         switch (job.event_type) {
           case EventType.SendWebhooks:
             await this.webhooksQueue.add(job.event_type, job.payload, {

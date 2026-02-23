@@ -24,10 +24,15 @@ services:
 
   mail:
     container_name: banking-system-mail
-    image: jijiechen/papercut:latest
+    image: axllent/mailpit:latest
     ports:
-      - 25:25
-      - 37408:37408
+      - 8025:8025
+      - 1025:1025
+    environment:
+      - MP_DATABASE=/data/mailpit.db
+      - TZ=Asia/Saigon
+    volumes:
+      - mailpit_data:/data
 
   minio:
     image: minio/minio:latest
@@ -42,7 +47,9 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
+
 volumes:
   postgres-data:
   redis_data:
   minio_data:
+  mailpit_data:
