@@ -7,6 +7,7 @@ import { AppController } from './app.controller';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/accounts.module';
 import { TransactionsModule } from './transactions/transactions.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { TransactionsModule } from './transactions/transactions.module';
     PrismaModule,
     AuthModule,
     TransactionsModule,
+    WebhooksModule,
   ],
   providers: [AppService],
   controllers: [AppController],
