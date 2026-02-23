@@ -44,14 +44,14 @@ export class WebhooksService {
 
   async findAll(accountId: string) {
     return this.prisma.webhookEndpoint.findMany({
-      where: { accountId },
+      where: { accountId, deletedAt: null },
       omit: { secret: true, deletedAt: true },
     });
   }
 
   async findOne(id: string, accountId: string) {
     const endpoint = await this.prisma.webhookEndpoint.findUnique({
-      where: { id, accountId },
+      where: { id, accountId, deletedAt: null },
       omit: { deletedAt: true },
     });
 
@@ -66,7 +66,7 @@ export class WebhooksService {
     return this.prisma.$transaction(async (tx) => {
       // 1️⃣ Ensure endpoint exists
       const endpoint = await tx.webhookEndpoint.findUnique({
-        where: { id, accountId },
+        where: { id, accountId, deletedAt: null },
         select: {
           id: true,
           url: true,
@@ -100,7 +100,7 @@ export class WebhooksService {
 
       // 3️⃣ Perform update
       const updated = await tx.webhookEndpoint.update({
-        where: { id, accountId },
+        where: { id, accountId, deletedAt: null },
         data: dto,
         select: {
           id: true,
@@ -117,7 +117,7 @@ export class WebhooksService {
   async delete(id: string, accountId: string) {
     try {
       await this.prisma.webhookEndpoint.update({
-        where: { id, accountId },
+        where: { id, accountId, deletedAt: null },
         data: { active: false, deletedAt: new Date() },
       });
     } catch (error) {
