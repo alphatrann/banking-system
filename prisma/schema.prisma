@@ -91,13 +91,15 @@ model EmailEvent {
   payload      Json        @db.JsonB
   status       EventStatus @default(Pending)
   attemptCount Int         @default(0) @map("attempt_count")
+  failedAt     DateTime?   @map("failed_at")
+  failedReason String?     @map("failed_reason")
 
   toAccount Account @relation(fields: [toAccountId], references: [id])
 
   sentAt    DateTime? @map("sent_at")
   createdAt DateTime  @default(now()) @map("created_at")
 
-  @@map("email_event")
+  @@map("email_events")
 }
 
 model WebhookEvent {
@@ -157,16 +159,16 @@ enum IdempotencyStatus {
 }
 
 model File {
-  id           String   @id @default(ulid())
-  bucket       String
-  originalName String   @map("original_name")
-  object       String
-  size         BigInt
-  iv           String
-  mimetype     String
-  createdAt    DateTime @default(now()) @map("created_at")
-  receipt      Receipt?
+  id        String   @id @default(ulid())
+  bucket    String
+  object    String
+  size      BigInt
+  iv        String
+  mimetype  String
+  createdAt DateTime @default(now()) @map("created_at")
+  receipt   Receipt?
 
+  @@unique([bucket, object])
   @@map("files")
 }
 

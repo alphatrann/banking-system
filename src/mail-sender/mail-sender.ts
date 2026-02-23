@@ -12,6 +12,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
 import { simulateError } from '../utils/simulation';
 import { EventStatus } from '@prisma/client';
+import { ReceiptsService } from '../receipts/receipts.service';
+import { formatError } from '../utils/formatter';
 
 @Injectable()
 @Processor(QueueName.Emails, {
@@ -22,6 +24,7 @@ export class MailSender extends WorkerHost {
   constructor(
     private prisma: PrismaService,
     private mailService: MailService,
+    private receiptsService: ReceiptsService,
     @InjectQueue(DLQName.EmailsDLQ) private emailDLQ: Queue,
   ) {
     super();
@@ -91,15 +94,26 @@ export class MailSender extends WorkerHost {
       });
     }
 
-    await this.mailService.sendConfirmTransferEmail(account.email, {
-      amount: Math.abs(Number(transaction.ledgerEntries[0].amount)),
-      timestamp: sentAt,
-      fromAccountId,
-      toAccountId,
-      transactionId: transaction.id,
-    });
+    const { object, objectName, mimetype } =
+      await this.receiptsService.getReceiptFile(payload.receiptId);
 
-    simulateError(0.2, ' sending email');
+    await this.mailService.sendConfirmTransferEmail(
+      account.email,
+      {
+        amount: Math.abs(Number(transaction.ledgerEntries[0].amount)),
+        timestamp: sentAt,
+        fromAccountId,
+        toAccountId,
+        transactionId: transaction.id,
+      },
+      {
+        contentDisposition: 'inline',
+        content: object,
+        filename: objectName,
+        contentType: mimetype,
+        encoding: 'utf-8',
+      },
+    );
 
     /**
      * STEP 3 — Mark delivered
@@ -115,10 +129,15 @@ export class MailSender extends WorkerHost {
     console.log(
       `Job ${job.id} failed, attempts made=${job.attemptsMade}/${job.opts.attempts}. Retry after ${job.delay}ms`,
     );
+    console.error(`Reason: ${error}`);
     if (job.attemptsMade >= job.opts.attempts!) {
       await this.prisma.emailEvent.updateMany({
         where: { id: job.id! },
-        data: { status: EventStatus.Failed },
+        data: {
+          status: EventStatus.Failed,
+          failedAt: new Date(),
+          failedReason: formatError(error),
+        },
       });
       await this.emailDLQ.add(job.name, job.data, job.opts);
     } else {

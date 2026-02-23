@@ -1,8 +1,8 @@
-name: payment-system
+name: banking-system
 services:
   postgres:
     image: postgres:alpine
-    container_name: payment-system-postgres
+    container_name: banking-system-postgres
     ports:
       - '5432:5432'
     volumes:
@@ -10,12 +10,11 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=payment-system
+      - POSTGRES_DB=banking-system
 
   redis:
     image: redis:alpine
-    container_name: payment-system-redis
-    restart: always
+    container_name: banking-system-redis
     ports:
       - '6379:6379'
     volumes:
@@ -24,12 +23,33 @@ services:
     command: ['redis-server', '/usr/local/etc/redis/redis.conf']
 
   mail:
-    container_name: payment-system-mail
-    image: jijiechen/papercut:latest
+    container_name: banking-system-mail
+    image: axllent/mailpit:latest
     ports:
-      - 25:25
-      - 37408:37408
+      - 8025:8025
+      - 1025:1025
+    environment:
+      - MP_DATABASE=/data/mailpit.db
+      - TZ=Asia/Saigon
+    volumes:
+      - mailpit_data:/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: banking-system-minio
+    ports:
+      - '9000:9000'
+      - '9001:9001' # MinIO Console port
+    environment:
+      MINIO_ROOT_USER: 'admin'
+      MINIO_ROOT_PASSWORD: 'password'
+      MINIO_DEFAULT_BUCKETS: 'banking-system'
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
 
 volumes:
   postgres-data:
   redis_data:
+  minio_data:
+  mailpit_data:

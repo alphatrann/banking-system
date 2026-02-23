@@ -6,6 +6,7 @@ import { MailModule } from '../mail/mail.module';
 import { QueuesModule } from '../queues/queues.module';
 import { ReceiptGenerator } from './receipt-generator';
 import { ReceiptsModule } from '../receipts/receipts.module';
+import { MinioModule } from '../minio/minio.module';
 
 @Module({
   imports: [
@@ -20,10 +21,15 @@ import { ReceiptsModule } from '../receipts/receipts.module';
       validationSchema: Joi.object({
         DATABASE_URL: Joi.string().required(),
         MAIL_TRANSPORT: Joi.string().uri().required(),
+        MINIO_ENDPOINT: Joi.string().required(),
+        MINIO_ACCESS_KEY: Joi.string().required(),
+        MINIO_SECRET_KEY: Joi.string().required(),
+        MINIO_PORT: Joi.string().required(),
       }),
     }),
     PrismaModule,
     QueuesModule,
+    MinioModule,
     MailModule,
     ReceiptsModule,
   ],

@@ -11,9 +11,9 @@ import { GenerateReceiptJobPayload } from '../outbox/interfaces/job-payload';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReceiptsService } from '../receipts/receipts.service';
 import { generateId } from '../utils/id';
-import { Prisma } from '@prisma/client';
-import { formatUSD } from '../utils/formatter';
+import { EventStatus, Prisma } from '@prisma/client';
 import { simulateError } from '../utils/simulation';
+import { formatError } from '../utils/formatter';
 
 @Injectable()
 @Processor(QueueName.Receipts, {
@@ -46,7 +46,7 @@ export class ReceiptGenerator extends WorkerHost {
       transaction.ledgerEntries;
 
     await this.receiptsService.generateReceipt({
-      amount: formatUSD(Math.abs(Number(transaction.ledgerEntries[0].amount))),
+      amount: Math.abs(Number(transaction.ledgerEntries[0].amount)),
       timestamp: new Date(),
       fromAccountId,
       toAccountId,
@@ -58,7 +58,7 @@ export class ReceiptGenerator extends WorkerHost {
         where: { number: job.data.receiptNumber },
         select: { id: true },
       });
-      simulateError(0.3, ' generating the receipt');
+
       await tx.outboxEvent.createMany({
         data: transaction.ledgerEntries.map((entry) => ({
           id: generateId('job'),
@@ -77,9 +77,18 @@ export class ReceiptGenerator extends WorkerHost {
   }
 
   @OnWorkerEvent('failed')
-  async onFailed(job: Job<GenerateReceiptJobPayload>) {
+  async onFailed(job: Job<GenerateReceiptJobPayload>, error: Error) {
+    const payload = job.data;
     if (job.attemptsMade >= job.opts.attempts!) {
       // TODO: add logging + alert
+      await this.prisma.receipt.update({
+        where: { number: payload.receiptNumber },
+        data: {
+          status: EventStatus.Failed,
+          failedReason: formatError(error),
+          failedAt: new Date(),
+        },
+      });
       await this.receiptsDLQ.add(job.name, job.data, job.opts);
     }
   }
