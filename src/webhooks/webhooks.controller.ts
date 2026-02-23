@@ -9,6 +9,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  NotFoundException,
 } from '@nestjs/common';
 import { WebhooksService } from './webhooks.service';
 import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
@@ -36,8 +37,11 @@ export class WebhooksController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string, @CurrentUser() account: Account) {
-    return this.webhooksService.findOne(id, account.id);
+  async findOne(@Param('id') id: string, @CurrentUser() account: Account) {
+    const webhookEndpoint = await this.webhooksService.findOne(id);
+    if (!webhookEndpoint || webhookEndpoint.accountId !== account.id)
+      throw new NotFoundException('Webhook endpoint not found');
+    return webhookEndpoint;
   }
 
   @Patch(':id')

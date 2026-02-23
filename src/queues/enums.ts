@@ -15,7 +15,6 @@ export enum DLQName {
 }
 
 export enum EventType {
-  SendWebhooks = 'webhooks.send',
   TrackAnalytics = 'analytics.track',
   SendEmails = 'emails.send',
   GenerateReceipts = 'receipts.generate',
@@ -24,7 +23,7 @@ export enum EventType {
 export function getQueueJobOptions(queueName: QueueName): JobsOptions {
   switch (queueName) {
     case QueueName.Webhooks:
-      return {}; // open-circuit / respect Retry-After dynamically
+      return { attempts: 20, backoff: { type: 'custom' } };
     case QueueName.Emails:
       return {
         attempts: 10,

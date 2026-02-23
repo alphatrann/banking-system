@@ -6,10 +6,11 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
 import { UpdateWebhookEndpointDto } from './dto/update-webhook-endpoint.dto';
-import { EventStatus } from '@prisma/client';
+import { EventStatus, Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { generateId } from '../utils/id';
 import { isRecordNotFound } from '../prisma/error-codes';
+import { WebhookEventType } from './enums';
 
 @Injectable()
 export class WebhooksService {
@@ -17,7 +18,7 @@ export class WebhooksService {
 
   async create(accountId: string, dto: CreateWebhookEndpointDto) {
     const endpointId = generateId('whep');
-    const secret = randomBytes(64).toString('base64');
+    const secret = randomBytes(64).toString('hex');
 
     const endpoint = await this.prisma.webhookEndpoint.create({
       data: {
@@ -33,13 +34,11 @@ export class WebhooksService {
         url: true,
         active: true,
         subscribedEvents: true,
+        secret: true,
       },
     });
 
-    return {
-      ...endpoint,
-      secretKey: `sk-${endpoint.id}:${secret}`,
-    };
+    return endpoint;
   }
 
   async findAll(accountId: string) {
@@ -49,15 +48,30 @@ export class WebhooksService {
     });
   }
 
-  async findOne(id: string, accountId: string) {
+  async findRegisteredEndpointIds(
+    subscribedEvent: WebhookEventType,
+    accountId: string,
+    tx?: Prisma.TransactionClient,
+  ) {
+    const webhookEndpointIds = await (
+      tx ?? this.prisma
+    ).webhookEndpoint.findMany({
+      where: {
+        active: true,
+        subscribedEvents: { has: subscribedEvent },
+        accountId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    return webhookEndpointIds.map(({ id }) => id);
+  }
+
+  async findOne(id: string) {
     const endpoint = await this.prisma.webhookEndpoint.findUnique({
-      where: { id, accountId, deletedAt: null },
+      where: { id, deletedAt: null },
       omit: { deletedAt: true },
     });
-
-    if (!endpoint) {
-      throw new NotFoundException('Webhook endpoint not found');
-    }
 
     return endpoint;
   }

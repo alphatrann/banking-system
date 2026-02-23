@@ -6,7 +6,7 @@ import {
 } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import { DLQName, EventType, QueueName } from '../queues/enums';
-import { Job, Queue } from 'bullmq';
+import { Job, Queue, UnrecoverableError } from 'bullmq';
 import { GenerateReceiptJobPayload } from '../outbox/interfaces/job-payload';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReceiptsService } from '../receipts/receipts.service';
@@ -61,7 +61,7 @@ export class ReceiptGenerator extends WorkerHost {
 
       await tx.outboxEvent.createMany({
         data: transaction.ledgerEntries.map((entry) => ({
-          id: generateId('job'),
+          id: generateId('obx'),
           aggregateType: QueueName.Emails,
           aggregateId: `${transaction.id}:${EventType.SendEmails}:${entry.accountId}`,
           eventType: EventType.SendEmails,
@@ -79,7 +79,10 @@ export class ReceiptGenerator extends WorkerHost {
   @OnWorkerEvent('failed')
   async onFailed(job: Job<GenerateReceiptJobPayload>, error: Error) {
     const payload = job.data;
-    if (job.attemptsMade >= job.opts.attempts!) {
+    if (
+      job.attemptsMade === job.opts.attempts! ||
+      error instanceof UnrecoverableError
+    ) {
       // TODO: add logging + alert
       await this.prisma.receipt.update({
         where: { number: payload.receiptNumber },

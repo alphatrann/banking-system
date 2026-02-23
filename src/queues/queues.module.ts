@@ -20,7 +20,7 @@ import { DLQName, getQueueJobOptions, QueueName } from './enums';
         defaultJobOptions: {
           ...getQueueJobOptions(name),
           removeOnComplete: { age: 3600 }, // keep 1 hour
-          removeOnFail: { age: 86400 }, // keep 1 day
+          removeOnFail: false, // do not delete in case adding to DLQ fails
         },
         // }),
       }),
