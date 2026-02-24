@@ -1,0 +1,41 @@
+# where to receive observability data
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+# process data in batches
+processors:
+  batch:
+
+exporters:
+  #  export traces to jaeger
+  jaeger:
+    endpoint: jaeger:14250
+
+  # export logs to loki
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+
+  # export metrics to prometheus
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+# pipeline wiring receivers, processors, exporters together
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger]
+
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [loki]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

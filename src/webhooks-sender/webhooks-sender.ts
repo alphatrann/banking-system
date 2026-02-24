@@ -114,10 +114,7 @@ export class WebhooksSender extends WorkerHost {
       if (response.status < HttpStatus.BAD_REQUEST) {
         await this.prisma.webhookEvent.update({
           where: { id: eventId },
-          data: {
-            status: EventStatus.Done,
-            sentAt: new Date(timestamp * 1000),
-          },
+          data: { status: EventStatus.Done },
         });
       } else {
         const retryAfter = response.headers.get('retry-after');
