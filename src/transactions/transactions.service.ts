@@ -201,6 +201,7 @@ export class TransactionsService {
         await this.insertOutbox(
           buildFailureOutboxJobs(
             {
+              id: generateId('txn'),
               ...dto,
               currency: 'USD',
               fromAccountId,

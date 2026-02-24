@@ -52,7 +52,7 @@ model LedgerEntry {
 model OutboxEvent {
   id            String            @id @default(ulid())
   aggregateType String            @map("aggregate_type")
-  aggregateId   String            @unique @map("aggregate_id")
+  aggregateId   String            @map("aggregate_id")
   eventType     String            @map("event_type")
   payload       Json              @db.JsonB
   status        OutboxEventStatus @default(Pending)
@@ -60,7 +60,9 @@ model OutboxEvent {
   attemptCount  Int               @default(0) @map("attempt_count")
   createdAt     DateTime          @default(now()) @map("created_at")
   processedAt   DateTime?         @map("processed_at")
+  traceContext  Json?             @map("trace_context") @db.JsonB
 
+  @@unique([aggregateType, aggregateId])
   @@map("outbox_events")
 }
 
@@ -110,7 +112,6 @@ model WebhookEvent {
   payload      Json        @db.JsonB
   status       EventStatus @default(Pending)
   attemptCount Int         @default(0) @map("attempt_count")
-  sentAt       DateTime?   @map("sent_at")
   createdAt    DateTime    @default(now()) @map("created_at")
 
   endpoint WebhookEndpoint  @relation(fields: [endpointId], references: [id])
@@ -146,7 +147,7 @@ model IdempotencyKey {
   requestHash  String            @map("request_hash")
   status       IdempotencyStatus @default(Processing)
   responseCode Int?              @map("response_code")
-  responseBody Json              @map("response_body") @db.JsonB
+  responseBody Json?             @map("response_body") @db.JsonB
   createdAt    DateTime          @default(now()) @map("created_at")
 
   account Account @relation(fields: [accountId], references: [id])
