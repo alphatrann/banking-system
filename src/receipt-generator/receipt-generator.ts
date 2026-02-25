@@ -18,6 +18,7 @@ import { WebhookEventType } from '../webhooks/enums';
 import {
   context,
   propagation,
+  ROOT_CONTEXT,
   SpanStatusCode,
   trace,
 } from '@opentelemetry/api';
@@ -43,14 +44,21 @@ export class ReceiptGenerator extends WorkerHost {
 
     if (!payload.transactionId) return;
     const tracer = trace.getTracer(this.TRACE_NAME);
-    const ctx = propagation.extract(context.active(), payload._trace);
-    await context.with(ctx, async () => {
-      await tracer.startActiveSpan('receipt.generate', async (span) => {
+    const parentCtx = propagation.extract(ROOT_CONTEXT, payload._trace ?? {});
+    const parentSpanContext = trace.getSpanContext(parentCtx);
+    await tracer.startActiveSpan(
+      'receipt.generate',
+      {
+        links: parentSpanContext ? [{ context: parentSpanContext }] : [],
+      },
+      async (span) => {
         try {
           const transaction = await this.prisma.transaction.findUnique({
             where: { id: payload.transactionId },
             include: { ledgerEntries: { orderBy: { amount: 'asc' } } },
           });
+          span.setAttribute('receipt.number', payload.receiptNumber);
+          span.setAttribute('receipt.attempts_made', job.attemptsMade);
 
           if (!transaction) throw new Error('Transaction not found');
 
@@ -108,6 +116,7 @@ export class ReceiptGenerator extends WorkerHost {
                       aggregateType: 'Transaction',
                       aggregateId: `${transaction.id}:${entry.accountId}`,
                       eventType: EventType.SendEmails,
+                      traceContext: payload._trace ?? {},
                       payload: {
                         transactionId: transaction.id,
                         sendEmailAccountId: entry.accountId,
@@ -119,6 +128,7 @@ export class ReceiptGenerator extends WorkerHost {
                       aggregateType: 'Transaction',
                       aggregateId: `${transaction.id}:${endpoint}`,
                       eventType: WebhookEventType.ReceiptGenerated,
+                      traceContext: payload._trace ?? {},
                       payload: {
                         endpointId: endpoint,
                         event: WebhookEventType.ReceiptGenerated,
@@ -153,50 +163,41 @@ export class ReceiptGenerator extends WorkerHost {
         } finally {
           span.end();
         }
-      });
-    });
+      },
+    );
   }
 
   @OnWorkerEvent('failed')
   async onFailed(job: Job<GenerateReceiptJobPayload>, error: Error) {
     const payload = job.data;
     const tracer = trace.getTracer(this.TRACE_NAME);
-    const ctx = propagation.extract(context.active(), payload._trace);
-    await context.with(ctx, async () => {
-      await tracer.startActiveSpan('receipt.failed', async (span) => {
-        try {
-          if (
-            job.attemptsMade === job.opts.attempts! ||
-            error instanceof UnrecoverableError
-          ) {
-            await tracer.startActiveSpan('receipt.dlq', async (span) => {
-              try {
-                await this.prisma.receipt.update({
-                  where: { number: payload.receiptNumber },
-                  data: {
-                    status: EventStatus.Failed,
-                    failedReason: formatError(error),
-                    failedAt: new Date(),
-                  },
-                });
-                await this.receiptsDLQ.add(job.name, job.data, job.opts);
-              } catch (error) {
-                span.recordException(error);
-                span.setStatus({ code: SpanStatusCode.ERROR });
-                throw error;
-              } finally {
-                span.end();
-              }
+    const ctx = propagation.extract(ROOT_CONTEXT, payload._trace);
+
+    if (
+      job.attemptsMade === job.opts.attempts! ||
+      error instanceof UnrecoverableError
+    ) {
+      await context.with(ctx, async () => {
+        await tracer.startActiveSpan('receipt.dlq', async (span) => {
+          try {
+            await this.prisma.receipt.update({
+              where: { number: payload.receiptNumber },
+              data: {
+                status: EventStatus.Failed,
+                failedReason: formatError(error),
+                failedAt: new Date(),
+              },
             });
+            await this.receiptsDLQ.add(job.name, job.data, job.opts);
+          } catch (error) {
+            span.recordException(error);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            throw error;
+          } finally {
+            span.end();
           }
-        } catch (error) {
-          span.recordException(error);
-          span.setStatus({ code: SpanStatusCode.ERROR });
-          throw error;
-        } finally {
-          span.end();
-        }
+        });
       });
-    });
+    }
   }
 }

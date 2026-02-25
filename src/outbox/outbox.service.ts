@@ -9,6 +9,7 @@ import { WebhookEventType } from '../webhooks/enums';
 import {
   context,
   propagation,
+  ROOT_CONTEXT,
   SpanStatusCode,
   trace,
 } from '@opentelemetry/api';
@@ -57,10 +58,13 @@ export class OutboxService {
     if (toEnqueueJobs.length === 0) return;
     const enqueues = toEnqueueJobs.map(async (job) => {
       console.log('Enqueueing job:', job);
-      const ctx = propagation.extract(context.active(), job.trace_context);
       const tracer = trace.getTracer(this.TRACING_NAME);
-      await context.with(ctx, async () => {
-        tracer.startActiveSpan('outbox.process', async (span) => {
+      const parentCtx = propagation.extract(ROOT_CONTEXT, job.trace_context);
+      const parentSpanContext = trace.getSpanContext(parentCtx);
+      tracer.startActiveSpan(
+        'outbox.process',
+        { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
+        async (span) => {
           const payload = { ...job.payload, _trace: job.trace_context };
           try {
             switch (job.event_type) {
@@ -96,8 +100,8 @@ export class OutboxService {
           } finally {
             span.end();
           }
-        });
-      });
+        },
+      );
     });
 
     const results = await Promise.allSettled(enqueues);

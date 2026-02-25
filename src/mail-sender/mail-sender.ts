@@ -10,10 +10,15 @@ import { Job, Queue, UnrecoverableError } from 'bullmq';
 import { SendEmailJobPayload } from '../outbox/interfaces/job-payload';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
-import { simulateError } from '../utils/simulation';
 import { EventStatus } from '@prisma/client';
 import { ReceiptsService } from '../receipts/receipts.service';
 import { formatError } from '../utils/formatter';
+import {
+  propagation,
+  ROOT_CONTEXT,
+  SpanStatusCode,
+  trace,
+} from '@opentelemetry/api';
 
 @Injectable()
 @Processor(QueueName.Emails, {
@@ -21,6 +26,8 @@ import { formatError } from '../utils/formatter';
   limiter: { duration: 60000, max: 100 },
 })
 export class MailSender extends WorkerHost {
+  private readonly TRACE_NAME = 'email-sender';
+
   constructor(
     private prisma: PrismaService,
     private mailService: MailService,
@@ -41,91 +48,112 @@ export class MailSender extends WorkerHost {
     if (!payload.transactionId) {
       throw new UnrecoverableError('Missing transaction ID');
     }
+    const tracer = trace.getTracer(this.TRACE_NAME);
+    const parentCtx = propagation.extract(ROOT_CONTEXT, payload._trace ?? {});
+    const parentSpanContext = trace.getSpanContext(parentCtx);
+    await tracer.startActiveSpan(
+      'mail.send',
+      { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
+      async (span) => {
+        try {
+          const transaction = await this.prisma.transaction.findUnique({
+            where: { id: payload.transactionId },
+            include: { ledgerEntries: { orderBy: { amount: 'asc' } } },
+          });
 
-    const transaction = await this.prisma.transaction.findUnique({
-      where: { id: payload.transactionId },
-      include: { ledgerEntries: { orderBy: { amount: 'asc' } } },
-    });
+          if (!transaction) throw new Error('Transaction not found');
+          if (transaction.ledgerEntries.length !== 2)
+            throw new Error('Invalid ledger state');
 
-    if (!transaction) throw new Error('Transaction not found');
-    if (transaction.ledgerEntries.length !== 2)
-      throw new Error('Invalid ledger state');
+          const [{ accountId: fromAccountId }, { accountId: toAccountId }] =
+            transaction.ledgerEntries;
 
-    const [{ accountId: fromAccountId }, { accountId: toAccountId }] =
-      transaction.ledgerEntries;
+          let sentAt: Date | null = null;
+          /**
+           * STEP 1 — Atomically claim the job
+           */
+          const event = await this.prisma.emailEvent.upsert({
+            where: { id: jobId },
+            create: {
+              id: jobId,
+              payload: payload as any,
+              toAccountId: payload.sendEmailAccountId,
+              status: EventStatus.Processing,
+            },
+            update: {},
+          });
+          if (event.status === EventStatus.Done && event.sentAt) {
+            return;
+          }
 
-    let sentAt: Date | null = null;
-    /**
-     * STEP 1 — Atomically claim the job
-     */
-    const event = await this.prisma.emailEvent.upsert({
-      where: { id: jobId },
-      create: {
-        id: jobId,
-        payload: payload as any,
-        toAccountId: payload.sendEmailAccountId,
-        status: EventStatus.Processing,
-      },
-      update: {},
-    });
-    if (event.status === EventStatus.Done && event.sentAt) {
-      return;
-    }
+          sentAt = event.sentAt;
 
-    sentAt = event.sentAt;
+          /**
+           * STEP 2 — Perform side effect
+           */
+          const account = await this.prisma.account.findUnique({
+            where: { id: payload.sendEmailAccountId },
+            select: { email: true },
+          });
 
-    /**
-     * STEP 2 — Perform side effect
-     */
-    const account = await this.prisma.account.findUnique({
-      where: { id: payload.sendEmailAccountId },
-      select: { email: true },
-    });
+          if (!account) {
+            throw new UnrecoverableError('Cannot find account to send email');
+          }
+          span.setAttribute('mail.to', account.email);
 
-    if (!account) {
-      throw new UnrecoverableError('Cannot find account to send email');
-    }
+          if (!sentAt) {
+            sentAt = new Date();
+            await this.prisma.emailEvent.update({
+              where: { id: jobId },
+              data: { sentAt },
+            });
+          }
 
-    if (!sentAt) {
-      sentAt = new Date();
-      await this.prisma.emailEvent.update({
-        where: { id: jobId },
-        data: { sentAt },
-      });
-    }
+          const { object, objectName, mimetype } =
+            await this.receiptsService.getReceiptFile(payload.receiptId);
 
-    const { object, objectName, mimetype } =
-      await this.receiptsService.getReceiptFile(payload.receiptId);
+          await this.mailService.sendConfirmTransferEmail(
+            account.email,
+            {
+              amount: Math.abs(Number(transaction.ledgerEntries[0].amount)),
+              timestamp: sentAt,
+              fromAccountId,
+              toAccountId,
+              transactionId: transaction.id,
+            },
+            {
+              contentDisposition: 'inline',
+              content: object,
+              filename: objectName,
+              contentType: mimetype,
+              encoding: 'utf-8',
+            },
+          );
 
-    await this.mailService.sendConfirmTransferEmail(
-      account.email,
-      {
-        amount: Math.abs(Number(transaction.ledgerEntries[0].amount)),
-        timestamp: sentAt,
-        fromAccountId,
-        toAccountId,
-        transactionId: transaction.id,
-      },
-      {
-        contentDisposition: 'inline',
-        content: object,
-        filename: objectName,
-        contentType: mimetype,
-        encoding: 'utf-8',
+          /**
+           * STEP 3 — Mark delivered
+           */
+          await this.prisma.emailEvent.update({
+            where: { id: jobId },
+            data: { status: EventStatus.Done },
+          });
+        } catch (error) {
+          span.recordException(error);
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          throw error;
+        } finally {
+          span.end();
+        }
       },
     );
-
-    /**
-     * STEP 3 — Mark delivered
-     */
-    await this.prisma.emailEvent.update({
-      where: { id: jobId },
-      data: { status: EventStatus.Done },
-    });
   }
 
   @OnWorkerEvent('failed')
   async onFailed(job: Job<SendEmailJobPayload>, error: Error) {
+    const payload = job.data;
+    const tracer = trace.getTracer(this.TRACE_NAME);
+    const parentCtx = propagation.extract(ROOT_CONTEXT, payload._trace ?? {});
+    const parentSpanContext = trace.getSpanContext(parentCtx);
     console.log(
       `Job ${job.id} failed, attempts made=${job.attemptsMade}/${job.opts.attempts}. Retry after ${job.delay}ms`,
     );
@@ -134,22 +162,50 @@ export class MailSender extends WorkerHost {
       job.attemptsMade === job.opts.attempts! ||
       error instanceof UnrecoverableError
     ) {
-      await this.prisma.emailEvent.updateMany({
-        where: { id: job.id! },
-        data: {
-          status: EventStatus.Failed,
-          failedAt: new Date(),
-          failedReason: formatError(error),
+      await tracer.startActiveSpan(
+        'mail.dlq',
+        { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
+        async (span) => {
+          try {
+            await this.prisma.emailEvent.updateMany({
+              where: { id: job.id! },
+              data: {
+                attemptCount: job.attemptsMade,
+                status: EventStatus.Failed,
+                failedAt: new Date(),
+                failedReason: formatError(error),
+              },
+            });
+            await this.emailDLQ.add(job.name, job.data, job.opts);
+          } catch (error) {
+            span.recordException(error);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            throw error;
+          } finally {
+            span.end();
+          }
         },
-      });
-      await this.emailDLQ.add(job.name, job.data, job.opts);
+      );
     } else {
-      await this.prisma.emailEvent.updateMany({
-        where: { id: job.id! },
-        data: {
-          attemptCount: job.attemptsMade,
+      await tracer.startActiveSpan(
+        'mail.retry',
+        { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
+        async (span) => {
+          try {
+            await this.prisma.emailEvent.updateMany({
+              where: { id: job.id! },
+              data: {
+                attemptCount: job.attemptsMade,
+              },
+            });
+          } catch (error) {
+            span.recordException(error);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+          } finally {
+            span.end();
+          }
         },
-      });
+      );
     }
   }
 }

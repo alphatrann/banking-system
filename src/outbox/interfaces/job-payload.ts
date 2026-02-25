@@ -1,21 +1,16 @@
 import { WebhookEventType } from '../../webhooks/enums';
 
 export interface JobPayload {
-  transactionId?: string;
   _trace: Record<string, string> | null;
 }
 
-export interface TrackAnalyticsJobPayload extends JobPayload {
-  requestTime: number;
-  responseTime: number;
-  statusCode: number;
-}
-
 export interface GenerateReceiptJobPayload extends JobPayload {
+  transactionId: string;
   receiptNumber: number;
 }
 
 export interface SendEmailJobPayload extends JobPayload {
+  transactionId: string;
   sendEmailAccountId: string;
   receiptId: string;
 }
@@ -29,21 +24,23 @@ export interface TransactionWebhookPayload {
   occurredAt: string;
 }
 
-export type SendWebhookJobPayload = { endpointId: string; eventId: string } & (
-  | {
-      event: WebhookEventType.TransferCompleted;
-
-      transaction: TransactionWebhookPayload;
-    }
-  | {
-      event: WebhookEventType.TransferFailed;
-      transaction: TransactionWebhookPayload;
-      statusCode: number;
-      error: string;
-    }
-  | {
-      event: WebhookEventType.ReceiptGenerated;
-      receiptNumber: number;
-      transaction: TransactionWebhookPayload;
-    }
-);
+export type SendWebhookJobPayload = JobPayload & {
+  endpointId: string;
+  eventId: string;
+} & (
+    | {
+        event: WebhookEventType.TransferCompleted;
+        transaction: TransactionWebhookPayload;
+      }
+    | {
+        event: WebhookEventType.TransferFailed;
+        transaction: TransactionWebhookPayload;
+        statusCode: number;
+        error: string;
+      }
+    | {
+        event: WebhookEventType.ReceiptGenerated;
+        receiptNumber: number;
+        transaction: TransactionWebhookPayload;
+      }
+  );

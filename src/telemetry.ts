@@ -7,6 +7,7 @@ import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
 import { PrismaInstrumentation } from '@prisma/instrumentation';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 
 config({
   path:
@@ -36,6 +37,7 @@ export function initTracer(serviceName: string) {
     metricReader: new PeriodicExportingMetricReader({
       exporter: metricExporter,
     }),
+    contextManager: new AsyncLocalStorageContextManager(), // avoid context propagation with `fetch()`
     instrumentations: [
       getNodeAutoInstrumentations(),
       new PrismaInstrumentation(),

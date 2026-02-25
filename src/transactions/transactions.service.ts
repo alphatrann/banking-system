@@ -48,6 +48,7 @@ export class TransactionsService {
         span.setAttribute('transaction.amount', dto.amount);
         span.setAttribute('transaction.from_account', fromAccountId);
         span.setAttribute('transaction.to_account', dto.toAccountId);
+        span.setAttribute('idempotency_key', idempotencyKey);
 
         const requestHash = this.hashRequest(idempotencyKey, dto);
 
