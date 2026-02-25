@@ -13,7 +13,6 @@ export enum DLQName {
 }
 
 export enum EventType {
-  TrackAnalytics = 'analytics.track',
   SendEmails = 'emails.send',
   GenerateReceipts = 'receipts.generate',
 }

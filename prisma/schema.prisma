@@ -62,7 +62,7 @@ model OutboxEvent {
   processedAt   DateTime?         @map("processed_at")
   traceContext  Json?             @map("trace_context") @db.JsonB
 
-  @@unique([aggregateType, aggregateId])
+  @@unique([aggregateId, eventType])
   @@map("outbox_events")
 }
 

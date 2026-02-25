@@ -2,6 +2,7 @@ import { WebhookEventType } from '../../webhooks/enums';
 
 export interface JobPayload {
   transactionId?: string;
+  _trace: Record<string, string> | null;
 }
 
 export interface TrackAnalyticsJobPayload extends JobPayload {

@@ -1,3 +1,6 @@
+import { initTracer } from './telemetry';
+initTracer('banking-outbox');
+
 import { Client } from 'pg';
 import { NestFactory } from '@nestjs/core';
 import { OutboxModule } from './outbox/outbox.module';

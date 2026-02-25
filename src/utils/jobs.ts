@@ -8,21 +8,24 @@ export function buildSuccessOutboxJobs(
   transaction: TransactionWebhookPayload,
   receiptNumber: number,
   webhookEndpointIds: string[],
+  carrier: Record<string, string>,
 ): Prisma.OutboxEventCreateManyInput[] {
   return [
     {
       id: generateId('obx'),
-      aggregateId: `${transaction.id}:${EventType.GenerateReceipts}`,
-      aggregateType: QueueName.Receipts,
+      aggregateId: transaction.id,
+      aggregateType: 'Transaction',
       eventType: EventType.GenerateReceipts,
+      traceContext: carrier,
       payload: { transactionId: transaction.id, receiptNumber },
     },
     ...webhookEndpointIds.map((id) => {
       const eventId = generateId('evt');
       return {
         id: generateId('obx'),
-        aggregateId: transaction.id,
-        aggregateType: QueueName.Webhooks,
+        aggregateId: `${transaction.id}:${id}`,
+        aggregateType: 'Transaction',
+        traceContext: carrier,
         eventType: WebhookEventType.TransferCompleted,
         payload: {
           endpointId: id,
@@ -40,6 +43,7 @@ export function buildFailureOutboxJobs(
   webhookEndpointIds: string[],
   statusCode: number,
   error: string,
+  carrier: Record<string, string>,
 ): Prisma.OutboxEventCreateManyInput[] {
   const jobs = webhookEndpointIds.map((endpointId) => {
     const jobId = generateId('obx');
@@ -47,7 +51,8 @@ export function buildFailureOutboxJobs(
     return {
       id: jobId,
       aggregateId: transaction.id,
-      aggregateType: QueueName.Webhooks,
+      traceContext: carrier,
+      aggregateType: 'Transaction',
       eventType: WebhookEventType.TransferFailed,
       payload: {
         endpointId,

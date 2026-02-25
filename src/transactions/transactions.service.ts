@@ -19,10 +19,17 @@ import { BASE_ACCOUNT_AMOUNT } from '../constants';
 import { buildFailureOutboxJobs, buildSuccessOutboxJobs } from '../utils/jobs';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { WebhookEventType } from '../webhooks/enums';
+import {
+  context,
+  propagation,
+  trace,
+  SpanStatusCode,
+} from '@opentelemetry/api';
 
 @Injectable()
 export class TransactionsService {
   private readonly MAX_SERIALIZATION_RETRIES = 3;
+  private readonly TRACER_NAME = 'transactions';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -34,243 +41,297 @@ export class TransactionsService {
     idempotencyKey: string,
     fromAccountId: string,
   ) {
-    const requestHash = this.hashRequest(idempotencyKey, dto);
+    const tracer = trace.getTracer(this.TRACER_NAME);
 
-    let responseBody: any;
+    return tracer.startActiveSpan('money.transfer', async (span) => {
+      try {
+        span.setAttribute('transaction.amount', dto.amount);
+        span.setAttribute('transaction.from_account', fromAccountId);
+        span.setAttribute('transaction.to_account', dto.toAccountId);
 
-    // ===============================
-    // PHASE 1 — Idempotency Lock
-    // ===============================
-    try {
-      await this.prisma.idempotencyKey.create({
-        data: {
-          accountId: fromAccountId,
-          key: idempotencyKey,
-          requestHash,
-          status: IdempotencyStatus.Processing,
-          responseBody: {},
-        },
-      });
-    } catch (error) {
-      if (!isUniqueViolation(error)) throw error;
+        const requestHash = this.hashRequest(idempotencyKey, dto);
 
-      const existing = await this.prisma.idempotencyKey.findUnique({
-        where: {
-          accountId_key: { accountId: fromAccountId, key: idempotencyKey },
-        },
-      });
+        await this.checkIdempotency(fromAccountId, idempotencyKey, requestHash);
 
-      if (!existing) {
-        throw new ConflictException('Race condition detected');
+        const responseBody = await this.createTransaction(fromAccountId, dto);
+
+        await this.finalize(responseBody, fromAccountId, dto, idempotencyKey);
+
+        if (responseBody.statusCode !== HttpStatus.CREATED) {
+          throw new HttpException(responseBody, responseBody.statusCode);
+        }
+
+        return responseBody;
+      } catch (error: any) {
+        if (!(error instanceof HttpException)) {
+          span.recordException(error);
+          span.setStatus({ code: SpanStatusCode.ERROR });
+        }
+        throw error;
+      } finally {
+        span.end();
       }
+    });
+  }
 
-      if (existing.requestHash !== requestHash) {
-        throw new BadRequestException(
-          'Idempotency key reused with different payload',
-        );
-      }
+  // ===============================
+  // Idempotency Phase
+  // ===============================
 
-      // If already completed → replay
-      if (existing.status === IdempotencyStatus.Completed) {
-        if (existing.responseCode !== HttpStatus.CREATED) {
-          throw new HttpException(
-            existing.responseBody as object,
-            existing.responseCode!,
+  private async checkIdempotency(
+    accountId: string,
+    key: string,
+    requestHash: string,
+  ) {
+    const tracer = trace.getTracer(this.TRACER_NAME);
+
+    return tracer.startActiveSpan('idempotency.check', async (span) => {
+      try {
+        await this.prisma.idempotencyKey.create({
+          data: {
+            accountId,
+            key,
+            requestHash,
+            status: IdempotencyStatus.Processing,
+            responseBody: {},
+          },
+        });
+      } catch (error) {
+        if (!isUniqueViolation(error)) {
+          span.recordException(error);
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          throw error;
+        }
+
+        const existing = await this.prisma.idempotencyKey.findUnique({
+          where: {
+            accountId_key: { accountId, key },
+          },
+        });
+
+        if (!existing) {
+          throw new ConflictException('Race condition detected');
+        }
+
+        if (existing.requestHash !== requestHash) {
+          throw new BadRequestException(
+            'Idempotency key reused with different payload',
           );
         }
 
-        return existing.responseBody;
+        if (existing.status === IdempotencyStatus.Completed) {
+          if (existing.responseCode !== HttpStatus.CREATED) {
+            throw new HttpException(
+              existing.responseBody as object,
+              existing.responseCode!,
+            );
+          }
+
+          return existing.responseBody;
+        }
+
+        throw new ConflictException('Request is still processing');
+      } finally {
+        span.end();
       }
+    });
+  }
 
-      throw new ConflictException('Request is still processing');
-    }
+  // ===============================
+  // Transaction Phase
+  // ===============================
 
-    // ===============================
-    // PHASE 2 — Financial Logic
-    // ===============================
+  private async createTransaction(
+    fromAccountId: string,
+    dto: CreateTransactionDto,
+  ) {
+    const tracer = trace.getTracer(this.TRACER_NAME);
 
-    for (
-      let attempt = 1;
-      attempt <= this.MAX_SERIALIZATION_RETRIES;
-      attempt++
-    ) {
+    return tracer.startActiveSpan('transaction.create', async (span) => {
       try {
-        await this.prisma.$transaction(
-          async (tx) => {
-            const transaction = await this.handleTransaction(
-              fromAccountId,
-              tx,
-              dto,
+        let responseBody: any;
+
+        for (
+          let attempt = 1;
+          attempt <= this.MAX_SERIALIZATION_RETRIES;
+          attempt++
+        ) {
+          try {
+            await this.prisma.$transaction(
+              async (tx) => {
+                const transaction = await this.handleTransaction(
+                  fromAccountId,
+                  tx,
+                  dto,
+                );
+
+                const { number } = await tx.receipt.create({
+                  data: {
+                    transactionId: transaction.id,
+                    id: generateId('rec'),
+                    status: EventStatus.Pending,
+                  },
+                  select: { number: true },
+                });
+
+                const carrier: Record<string, string> = {};
+                propagation.inject(context.active(), carrier);
+
+                const fromEndpoints =
+                  await this.webhooksService.findRegisteredEndpointIds(
+                    WebhookEventType.TransferCompleted,
+                    fromAccountId,
+                    tx,
+                  );
+
+                const toEndpoints =
+                  await this.webhooksService.findRegisteredEndpointIds(
+                    WebhookEventType.TransferCompleted,
+                    dto.toAccountId,
+                    tx,
+                  );
+
+                await this.insertOutbox(
+                  buildSuccessOutboxJobs(
+                    {
+                      id: transaction.id,
+                      fromAccountId,
+                      ...dto,
+                      occurredAt: transaction.createdAt.toISOString(),
+                      currency: 'USD',
+                    },
+                    Number(number),
+                    [...fromEndpoints, ...toEndpoints],
+                    carrier,
+                  ),
+                  tx,
+                );
+
+                responseBody = {
+                  statusCode: HttpStatus.CREATED,
+                  transaction: {
+                    id: transaction.id,
+                    amount: dto.amount,
+                    createdAt: transaction.createdAt.toISOString(),
+                  },
+                };
+              },
+              {
+                isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+              },
             );
 
-            const { number } = await tx.receipt.create({
-              data: {
-                transactionId: transaction.id,
-                id: generateId('rec'),
-                status: EventStatus.Pending,
-              },
-              select: { number: true },
-            });
+            break;
+          } catch (error: any) {
+            if (
+              isSerializationFailure(error) &&
+              attempt < this.MAX_SERIALIZATION_RETRIES
+            ) {
+              continue;
+            }
 
-            responseBody = {
-              statusCode: HttpStatus.CREATED,
-              transaction: {
-                id: transaction.id,
-                amount: dto.amount,
-                createdAt: transaction.createdAt.toISOString(),
-              },
+            if (error instanceof BadRequestException) {
+              return error.getResponse();
+            }
+
+            if (isForeignKeyViolation(error)) {
+              return {
+                statusCode: HttpStatus.NOT_FOUND,
+                error: "Destination account doesn't exist.",
+              };
+            }
+
+            span.recordException(error);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+
+            return {
+              statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+              error: 'Internal error while processing transaction',
             };
+          }
+        }
 
-            const fromWebhookEndpointIds =
+        return responseBody;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  // ===============================
+  // Finalization Phase
+  // ===============================
+
+  private async finalize(
+    responseBody: any,
+    fromAccountId: string,
+    dto: CreateTransactionDto,
+    idempotencyKey: string,
+  ) {
+    const tracer = trace.getTracer(this.TRACER_NAME);
+
+    return tracer.startActiveSpan('transaction.finalize', async (span) => {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          if (responseBody.statusCode !== HttpStatus.CREATED) {
+            const carrier: Record<string, string> = {};
+            propagation.inject(context.active(), carrier);
+
+            const fromEndpoints =
               await this.webhooksService.findRegisteredEndpointIds(
-                WebhookEventType.TransferCompleted,
+                WebhookEventType.TransferFailed,
                 fromAccountId,
                 tx,
               );
-            const toWebhookEndpointIds =
-              await this.webhooksService.findRegisteredEndpointIds(
-                WebhookEventType.TransferCompleted,
-                dto.toAccountId,
-                tx,
-              );
+
+            const toEndpoints =
+              responseBody.statusCode === HttpStatus.NOT_FOUND
+                ? []
+                : await this.webhooksService.findRegisteredEndpointIds(
+                    WebhookEventType.TransferFailed,
+                    dto.toAccountId,
+                    tx,
+                  );
 
             await this.insertOutbox(
-              buildSuccessOutboxJobs(
+              buildFailureOutboxJobs(
                 {
-                  fromAccountId,
+                  id: generateId('txn'),
                   ...dto,
-                  occurredAt: transaction.createdAt.toISOString(),
                   currency: 'USD',
-                  id: transaction.id,
+                  fromAccountId,
+                  occurredAt: new Date().toISOString(),
                 },
-                Number(number),
-                [...fromWebhookEndpointIds, ...toWebhookEndpointIds],
+                [...fromEndpoints, ...toEndpoints],
+                responseBody.statusCode,
+                responseBody.error,
+                carrier,
               ),
               tx,
             );
-          },
-          {
-            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-          },
-        );
+          }
 
-        break;
-      } catch (error: any) {
-        if (
-          isSerializationFailure(error) &&
-          attempt < this.MAX_SERIALIZATION_RETRIES
-        ) {
-          continue;
-        } else if (error instanceof BadRequestException) {
-          return error.getResponse();
-        } else if (isForeignKeyViolation(error)) {
-          responseBody = {
-            statusCode: HttpStatus.NOT_FOUND,
-            error: "Destination account doesn't exist.",
-          };
-        } else {
-          responseBody = {
-            statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-            error: 'Internal error while processing transaction',
-          };
-        }
-        break;
-      }
-    }
-
-    // ===============================
-    // PHASE 3 — Finalize
-    // ===============================
-
-    await this.prisma.$transaction(async (tx) => {
-      if (responseBody.statusCode !== HttpStatus.CREATED) {
-        const fromWebhookEndpointIds =
-          await this.webhooksService.findRegisteredEndpointIds(
-            WebhookEventType.TransferCompleted,
+          await this.updateIdempotencyKey(
             fromAccountId,
+            idempotencyKey,
+            responseBody,
+            IdempotencyStatus.Completed,
             tx,
           );
-        const toWebhookEndpointIds =
-          responseBody.statusCode === HttpStatus.NOT_FOUND
-            ? []
-            : await this.webhooksService.findRegisteredEndpointIds(
-                WebhookEventType.TransferCompleted,
-                dto.toAccountId,
-                tx,
-              );
-        await this.insertOutbox(
-          buildFailureOutboxJobs(
-            {
-              id: generateId('txn'),
-              ...dto,
-              currency: 'USD',
-              fromAccountId,
-              occurredAt: new Date().toISOString(),
-            },
-            [...fromWebhookEndpointIds, ...toWebhookEndpointIds],
-            responseBody.statusCode,
-            responseBody.error,
-          ),
-          tx,
-        );
+        });
+      } catch (error) {
+        span.recordException(error);
+        span.setStatus({ code: SpanStatusCode.ERROR });
+        throw error;
+      } finally {
+        span.end();
       }
-
-      await this.updateIdempotencyKey(
-        fromAccountId,
-        idempotencyKey,
-        responseBody,
-        IdempotencyStatus.Completed,
-        tx,
-      );
-    });
-
-    if (responseBody.statusCode !== HttpStatus.CREATED) {
-      throw new HttpException(responseBody, responseBody.statusCode);
-    }
-
-    return responseBody;
-  }
-
-  private async updateIdempotencyKey(
-    accountId: string,
-    idempotencyKey: string,
-    responseBody: any,
-    status: IdempotencyStatus,
-    tx?: Prisma.TransactionClient,
-  ) {
-    await (tx ?? this.prisma).idempotencyKey.update({
-      where: {
-        accountId_key: {
-          accountId,
-          key: idempotencyKey,
-        },
-      },
-      data: {
-        status,
-        responseBody,
-        responseCode: responseBody.statusCode,
-      },
     });
   }
 
-  private async insertOutbox(
-    jobs: Prisma.OutboxEventCreateManyInput[],
-    tx?: Prisma.TransactionClient,
-  ) {
-    if (tx) {
-      await tx.outboxEvent.createMany({ data: jobs });
-      await tx.$executeRawUnsafe(`
-      NOTIFY outbox_channel
-    `);
-    } else {
-      await this.prisma.$transaction(async (tx) => {
-        await tx.outboxEvent.createMany({ data: jobs });
-        await tx.$executeRawUnsafe(`
-      NOTIFY outbox_channel
-    `);
-      });
-    }
-  }
+  // ===============================
+  // Domain Logic
+  // ===============================
 
   private async handleTransaction(
     fromAccountId: string,
@@ -286,13 +347,11 @@ export class TransactionsService {
       });
     }
 
-    const transactionId = generateId('txn');
-
     const toBalance = await this.computeBalance(dto.toAccountId, tx);
 
-    const transaction = await tx.transaction.create({
+    return tx.transaction.create({
       data: {
-        id: transactionId,
+        id: generateId('txn'),
         ledgerEntries: {
           createMany: {
             data: [
@@ -311,7 +370,6 @@ export class TransactionsService {
         },
       },
     });
-    return transaction;
   }
 
   async computeBalance(accountId: string, tx?: Prisma.TransactionClient) {
@@ -320,8 +378,10 @@ export class TransactionsService {
       orderBy: { id: 'desc' },
       take: 1,
     });
-    if (mostRecentEntry?.runningBalance)
+
+    if (mostRecentEntry?.runningBalance) {
       return Number(mostRecentEntry.runningBalance);
+    }
 
     const {
       _sum: { amount },
@@ -331,6 +391,32 @@ export class TransactionsService {
     });
 
     return Number(amount ?? 0) + BASE_ACCOUNT_AMOUNT;
+  }
+
+  private async updateIdempotencyKey(
+    accountId: string,
+    key: string,
+    responseBody: any,
+    status: IdempotencyStatus,
+    tx?: Prisma.TransactionClient,
+  ) {
+    await (tx ?? this.prisma).idempotencyKey.update({
+      where: { accountId_key: { accountId, key } },
+      data: {
+        status,
+        responseBody,
+        responseCode: responseBody.statusCode,
+      },
+    });
+  }
+
+  private async insertOutbox(
+    jobs: Prisma.OutboxEventCreateManyInput[],
+    tx?: Prisma.TransactionClient,
+  ) {
+    const client = tx ?? this.prisma;
+    await client.outboxEvent.createMany({ data: jobs });
+    await client.$executeRawUnsafe(`NOTIFY outbox_channel`);
   }
 
   private hashRequest(idempotencyKey: string, dto: CreateTransactionDto) {

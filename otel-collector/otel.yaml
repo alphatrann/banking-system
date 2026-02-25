@@ -3,39 +3,30 @@ receivers:
   otlp:
     protocols:
       grpc:
-      http:
+        endpoint: 0.0.0.0:4317
 
-# process data in batches
 processors:
-  batch:
+extensions:
+  health_check: {}
 
 exporters:
   #  export traces to jaeger
-  jaeger:
-    endpoint: jaeger:14250
-
-  # export logs to loki
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
+  otlp:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
 
   # export metrics to prometheus
   prometheus:
-    endpoint: 0.0.0.0:8889
+    endpoint: 0.0.0.0:9090
 
 # pipeline wiring receivers, processors, exporters together
 service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [jaeger]
-
-    logs:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [loki]
+      exporters: [otlp]
 
     metrics:
       receivers: [otlp]
-      processors: [batch]
       exporters: [prometheus]
