@@ -8,6 +8,9 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/accounts.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { LoggerModule } from './logger/logger.module';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { HttpLoggingInterceptor } from './logger/http-logging.interceptor';
 
 @Module({
   imports: [
@@ -27,11 +30,18 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     }),
     UsersModule,
     PrismaModule,
+    LoggerModule,
     AuthModule,
     TransactionsModule,
     WebhooksModule,
   ],
-  providers: [AppService],
+  providers: [
+    AppService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: HttpLoggingInterceptor,
+    },
+  ],
   controllers: [AppController],
 })
 export class AppModule {}

@@ -5,7 +5,12 @@ import {
   WorkerHost,
 } from '@nestjs/bullmq';
 import { QueueName } from '../queues/enums';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import {
+  HttpStatus,
+  Inject,
+  Injectable,
+  type LoggerService,
+} from '@nestjs/common';
 import { BackoffStrategy, Job, Queue, UnrecoverableError } from 'bullmq';
 import { SendWebhookJobPayload } from '../outbox/interfaces/job-payload';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,12 +26,12 @@ import {
   SpanStatusCode,
   trace,
 } from '@opentelemetry/api';
+import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 const backoffStrategy: BackoffStrategy = (attemptsMade, type, err) => {
   try {
     const parsed = JSON.parse(err!.message);
     if (parsed?.delay) {
-      console.log('Retry-After:', parsed.delay);
       return parsed.delay;
     }
   } catch {}
@@ -51,6 +56,7 @@ export class WebhooksSender extends WorkerHost {
   constructor(
     private prisma: PrismaService,
     private webhooksService: WebhooksService,
+    @Inject(WINSTON_MODULE_NEST_PROVIDER) private logger: LoggerService,
     @InjectQueue(QueueName.Webhooks) private webhooksDLQ: Queue,
   ) {
     super();
@@ -73,15 +79,18 @@ export class WebhooksSender extends WorkerHost {
             await this.webhooksService.findOne(endpointId);
           if (!webhookEndpoint)
             throw new UnrecoverableError('Webhook endpoint not found');
-          span.setAttribute('webhook.url', webhookEndpoint.url);
-          span.setAttribute('webhook.account_id', webhookEndpoint.accountId);
-          span.setAttribute('webhook.payload', JSON.stringify(payload));
-          span.setAttribute('webhook.attempts_made', job.attemptsMade);
-          span.setAttribute('webhook.event_name', payload.event);
-          const timestamp = unix();
 
+          const timestamp = unix();
           const body = { id: eventId, timestamp, ...payload };
           const jsonBody = JSON.stringify(body);
+
+          span.setAttribute('webhook.url', webhookEndpoint.url);
+          span.setAttribute('webhook.account_id', webhookEndpoint.accountId);
+          span.setAttribute('webhook.event_name', payload.event);
+          span.setAttribute('webhook.payload_size', jsonBody.length);
+          span.setAttribute('webhook.attempts_made', job.attemptsMade);
+          span.setAttribute('webhook.event_name', payload.event);
+
           const signedPayload = `${timestamp}.${jsonBody}`;
           const signature = hmac(signedPayload, webhookEndpoint.secret);
 
@@ -96,9 +105,23 @@ export class WebhooksSender extends WorkerHost {
             },
             update: {},
           });
+          this.logger.debug?.({
+            event: 'webhooks.payload.prepare',
+            component: 'webhooks',
+            jobId: job.id,
+            payload: event,
+            attempts: job.attemptsMade,
+          });
           if (event.status === EventStatus.Done) return;
 
           await tracer.startActiveSpan('webhooks.http', async (span) => {
+            this.logger.log({
+              event: 'webhooks.sending',
+              component: 'webhooks',
+              jobId: job.id,
+              attempts: job.attemptsMade,
+              webhookUrl: webhookEndpoint.url,
+            });
             const requestSentAtMs = Date.now();
             try {
               await this.handleRequest(
@@ -108,6 +131,12 @@ export class WebhooksSender extends WorkerHost {
                 signature,
                 jsonBody,
               );
+              this.logger.log({
+                event: 'webhooks.success',
+                component: 'webhooks',
+                jobId: job.id,
+                attempts: job.attemptsMade,
+              });
             } catch (error: any) {
               if (error instanceof UnrecoverableError) throw error;
               span.setStatus({ code: SpanStatusCode.ERROR });
@@ -212,10 +241,6 @@ export class WebhooksSender extends WorkerHost {
     const parentCtx = propagation.extract(ROOT_CONTEXT, _trace);
     const parentSpanContext = trace.getSpanContext(parentCtx);
 
-    console.log(
-      `Job ${job.id} failed, attempts made=${job.attemptsMade}/${job.opts.attempts}. Retry after ${job.delay}ms`,
-    );
-    console.error(`Reason: ${error}`);
     const noMoreRetry =
       job.attemptsMade === job.opts.attempts! ||
       error instanceof UnrecoverableError;
@@ -233,9 +258,21 @@ export class WebhooksSender extends WorkerHost {
               },
             });
             await this.webhooksDLQ.add(job.name, job.data, job.opts);
+            this.logger.error({
+              event: 'webhooks.dlq.success',
+              component: 'webhooks',
+              jobId: job.id,
+              attempts: job.attemptsMade,
+            });
           } catch (error) {
             span.setStatus({ code: SpanStatusCode.ERROR });
             span.recordException(error);
+            this.logger.error({
+              event: 'webhooks.dlq.failed',
+              component: 'webhooks',
+              jobId: job.id,
+              attempts: job.attemptsMade,
+            });
             throw error;
           } finally {
             span.end();
@@ -252,9 +289,23 @@ export class WebhooksSender extends WorkerHost {
               where: { id: eventId },
               data: { attemptCount: job.attemptsMade },
             });
+            this.logger.warn({
+              event: 'webhooks.retry.scheduled',
+              component: 'webhooks',
+              jobId: job.id,
+              attempts: job.attemptsMade,
+              retryAfterMs: job.delay,
+            });
           } catch (error) {
             span.setStatus({ code: SpanStatusCode.ERROR });
             span.recordException(error);
+            this.logger.error({
+              event: 'webhooks.retry.failed',
+              component: 'webhooks',
+              jobId: job.id,
+              attempts: job.attemptsMade,
+              retryAfterMs: job.delay,
+            });
             throw error;
           } finally {
             span.end();

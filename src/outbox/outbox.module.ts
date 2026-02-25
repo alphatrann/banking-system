@@ -4,6 +4,7 @@ import { OutboxService } from './outbox.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ConfigModule } from '@nestjs/config';
 import Joi from 'joi';
+import { LoggerModule } from '../logger/logger.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import Joi from 'joi';
     }),
     QueuesModule,
     PrismaModule,
+    LoggerModule,
   ],
   providers: [OutboxService],
 })

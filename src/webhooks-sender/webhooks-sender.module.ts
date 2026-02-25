@@ -5,12 +5,14 @@ import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../prisma/prisma.module';
 import Joi from 'joi';
 import { WebhooksSender } from './webhooks-sender';
+import { LoggerModule } from '../logger/logger.module';
 
 @Module({
   imports: [
     WebhooksModule,
     QueuesModule,
     PrismaModule,
+    LoggerModule,
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath:
