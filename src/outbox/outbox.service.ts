@@ -5,15 +5,22 @@ import { EventType, QueueName } from '../queues/enums';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { OUTBOX_MAX_ATTEMPTS } from '../constants';
-import { simulateError } from '../utils/simulation';
 import { WebhookEventType } from '../webhooks/enums';
+import {
+  context,
+  propagation,
+  ROOT_CONTEXT,
+  SpanStatusCode,
+  trace,
+} from '@opentelemetry/api';
 
 @Injectable()
 export class OutboxService {
+  private readonly TRACING_NAME = 'outbox';
+
   constructor(
     private prisma: PrismaService,
     @InjectQueue(QueueName.Webhooks) private webhooksQueue: Queue,
-    @InjectQueue(QueueName.Analytics) private analyticsQueue: Queue,
     @InjectQueue(QueueName.Emails) private emailsQueue: Queue,
     @InjectQueue(QueueName.Receipts) private receiptsQueue: Queue,
   ) {}
@@ -26,6 +33,7 @@ export class OutboxService {
           event_type: EventType | WebhookEventType;
           attempt_count: number;
           payload: object;
+          trace_context: Record<string, string>;
         }[]
       >`
         UPDATE outbox_events
@@ -41,7 +49,7 @@ export class OutboxService {
           FOR UPDATE SKIP LOCKED
           LIMIT 50
         )
-        RETURNING id, event_type, payload, attempt_count;
+        RETURNING id, event_type, payload, attempt_count, trace_context;
     `;
 
       return pendingJobs;
@@ -50,37 +58,50 @@ export class OutboxService {
     if (toEnqueueJobs.length === 0) return;
     const enqueues = toEnqueueJobs.map(async (job) => {
       console.log('Enqueueing job:', job);
-      try {
-        switch (job.event_type) {
-          case WebhookEventType.TransferCompleted:
-          case WebhookEventType.TransferFailed:
-          case WebhookEventType.ReceiptGenerated:
-            await this.webhooksQueue.add(job.event_type, job.payload, {
-              jobId: job.id,
-            });
-            break;
-          case EventType.TrackAnalytics:
-            await this.analyticsQueue.add(job.event_type, job.payload, {
-              jobId: job.id,
-            });
-            break;
-          case EventType.SendEmails:
-            await this.emailsQueue.add(job.event_type, job.payload, {
-              jobId: job.id,
-            });
-            break;
-          case EventType.GenerateReceipts:
-            await this.receiptsQueue.add(job.event_type, job.payload, {
-              jobId: job.id,
-            });
-            break;
-          default:
-            console.warn('Skipped due to unknown event type', job.event_type);
-            break;
-        }
-      } catch (error) {
-        throw error;
-      }
+      const tracer = trace.getTracer(this.TRACING_NAME);
+      const parentCtx = propagation.extract(ROOT_CONTEXT, job.trace_context);
+      const parentSpanContext = trace.getSpanContext(parentCtx);
+      tracer.startActiveSpan(
+        'outbox.process',
+        { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
+        async (span) => {
+          const payload = { ...job.payload, _trace: job.trace_context };
+          try {
+            switch (job.event_type) {
+              case WebhookEventType.TransferCompleted:
+              case WebhookEventType.TransferFailed:
+              case WebhookEventType.ReceiptGenerated:
+                await this.webhooksQueue.add(job.event_type, payload, {
+                  jobId: job.id,
+                });
+                break;
+              case EventType.SendEmails:
+                await this.emailsQueue.add(job.event_type, payload, {
+                  jobId: job.id,
+                });
+                break;
+              case EventType.GenerateReceipts:
+                await this.receiptsQueue.add(job.event_type, payload, {
+                  jobId: job.id,
+                });
+                break;
+              default:
+                console.warn(
+                  'Skipped due to unknown event type',
+                  job.event_type,
+                );
+                break;
+            }
+            span.setStatus({ code: SpanStatusCode.OK });
+          } catch (error) {
+            span.recordException(error);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            throw error;
+          } finally {
+            span.end();
+          }
+        },
+      );
     });
 
     const results = await Promise.allSettled(enqueues);

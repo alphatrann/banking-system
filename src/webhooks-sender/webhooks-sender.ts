@@ -15,6 +15,12 @@ import { hmac } from '../utils/hash';
 import { EventStatus } from '@prisma/client';
 import { WEBHOOK_TIMEOUT_MS } from '../constants';
 import { formatError } from '../utils/formatter';
+import {
+  propagation,
+  ROOT_CONTEXT,
+  SpanStatusCode,
+  trace,
+} from '@opentelemetry/api';
 
 const backoffStrategy: BackoffStrategy = (attemptsMade, type, err) => {
   try {
@@ -40,6 +46,8 @@ const backoffStrategy: BackoffStrategy = (attemptsMade, type, err) => {
 })
 @Injectable()
 export class WebhooksSender extends WorkerHost {
+  private readonly TRACE_NAME = 'webhooks-sender';
+
   constructor(
     private prisma: PrismaService,
     private webhooksService: WebhooksService,
@@ -49,36 +57,81 @@ export class WebhooksSender extends WorkerHost {
   }
 
   async process(job: Job<SendWebhookJobPayload>): Promise<void> {
-    const { endpointId, eventId, ...payload } = job.data;
-    const webhookEndpoint = await this.webhooksService.findOne(endpointId);
-    if (!webhookEndpoint)
-      throw new UnrecoverableError('Webhook endpoint not found');
-    const timestamp = unix();
+    const { endpointId, eventId, _trace, ...payload } = job.data;
+    const tracer = trace.getTracer(this.TRACE_NAME);
+    const parentCtx = propagation.extract(ROOT_CONTEXT, _trace ?? {});
+    const parentSpanContext = trace.getSpanContext(parentCtx);
 
-    const body = { id: eventId, timestamp, ...payload };
-    const jsonBody = JSON.stringify(body);
-    const signedPayload = `${timestamp}.${jsonBody}`;
-    const signature = hmac(signedPayload, webhookEndpoint.secret);
-
-    const event = await this.prisma.webhookEvent.upsert({
-      where: { id: eventId },
-      create: {
-        id: eventId,
-        eventType: payload.event,
-        payload: payload as any,
-        endpointId,
-        status: EventStatus.Processing,
+    await tracer.startActiveSpan(
+      'webhooks.send',
+      {
+        links: parentSpanContext ? [{ context: parentSpanContext }] : [],
       },
-      update: {},
-    });
-    if (event.status === EventStatus.Done) return;
+      async (span) => {
+        try {
+          const webhookEndpoint =
+            await this.webhooksService.findOne(endpointId);
+          if (!webhookEndpoint)
+            throw new UnrecoverableError('Webhook endpoint not found');
+          span.setAttribute('webhook.url', webhookEndpoint.url);
+          span.setAttribute('webhook.account_id', webhookEndpoint.accountId);
+          span.setAttribute('webhook.payload', JSON.stringify(payload));
+          span.setAttribute('webhook.attempts_made', job.attemptsMade);
+          span.setAttribute('webhook.event_name', payload.event);
+          const timestamp = unix();
 
-    await this.handleRequest(
-      webhookEndpoint.url,
-      eventId,
-      timestamp,
-      signature,
-      jsonBody,
+          const body = { id: eventId, timestamp, ...payload };
+          const jsonBody = JSON.stringify(body);
+          const signedPayload = `${timestamp}.${jsonBody}`;
+          const signature = hmac(signedPayload, webhookEndpoint.secret);
+
+          const event = await this.prisma.webhookEvent.upsert({
+            where: { id: eventId },
+            create: {
+              id: eventId,
+              eventType: payload.event,
+              payload: payload as any,
+              endpointId,
+              status: EventStatus.Processing,
+            },
+            update: {},
+          });
+          if (event.status === EventStatus.Done) return;
+
+          await tracer.startActiveSpan('webhooks.http', async (span) => {
+            const requestSentAtMs = Date.now();
+            try {
+              await this.handleRequest(
+                webhookEndpoint.url,
+                eventId,
+                timestamp,
+                signature,
+                jsonBody,
+              );
+            } catch (error: any) {
+              if (error instanceof UnrecoverableError) throw error;
+              span.setStatus({ code: SpanStatusCode.ERROR });
+              span.recordException(error);
+              await this.prisma.webhookAttempt.create({
+                data: {
+                  durationMs: Date.now() - requestSentAtMs,
+                  error: formatError(error),
+                  webhookEventId: eventId,
+                },
+              });
+              throw error;
+            } finally {
+              span.end();
+            }
+          });
+        } catch (error) {
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          span.recordException(error);
+          throw error;
+        } finally {
+          span.end();
+        }
+      },
     );
   }
 
@@ -90,51 +143,34 @@ export class WebhooksSender extends WorkerHost {
     jsonBody: string,
   ) {
     const requestSentAtMs = Date.now();
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Webhook-Signature': `t=${timestamp},v1=${signature}`,
-          'X-Event-ID': eventId,
-        },
-        body: jsonBody,
-        signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
-      });
-      const body = await response.json();
-      await this.prisma.webhookAttempt.create({
-        data: {
-          durationMs: Date.now() - requestSentAtMs,
-          responseBody: body,
-          responseStatus: response.status,
-          webhookEventId: eventId,
-        },
-      });
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Webhook-Signature': `t=${timestamp},v1=${signature}`,
+        'X-Event-ID': eventId,
+      },
+      body: jsonBody,
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+    });
+    const body = await response.json();
+    await this.prisma.webhookAttempt.create({
+      data: {
+        durationMs: Date.now() - requestSentAtMs,
+        responseBody: body,
+        responseStatus: response.status,
+        webhookEventId: eventId,
+      },
+    });
 
-      if (response.status < HttpStatus.BAD_REQUEST) {
-        await this.prisma.webhookEvent.update({
-          where: { id: eventId },
-          data: {
-            status: EventStatus.Done,
-            sentAt: new Date(timestamp * 1000),
-          },
-        });
-      } else {
-        const retryAfter = response.headers.get('retry-after');
-        await this.handleFailure(response.status, retryAfter);
-      }
-    } catch (error: any) {
-      if (error instanceof UnrecoverableError) throw error;
-      await this.prisma.webhookAttempt.create({
-        data: {
-          durationMs: Date.now() - requestSentAtMs,
-          responseBody: {},
-          responseStatus: 500,
-          error: formatError(error),
-          webhookEventId: eventId,
-        },
+    if (response.status < HttpStatus.BAD_REQUEST) {
+      await this.prisma.webhookEvent.update({
+        where: { id: eventId },
+        data: { status: EventStatus.Done },
       });
-      throw new Error(error.message);
+    } else {
+      const retryAfter = response.headers.get('retry-after');
+      await this.handleFailure(response.status, retryAfter);
     }
   }
 
@@ -171,23 +207,60 @@ export class WebhooksSender extends WorkerHost {
 
   @OnWorkerEvent('failed')
   async onFailed(job: Job<SendWebhookJobPayload>, error: Error) {
+    const { eventId, _trace } = job.data;
+    const tracer = trace.getTracer(this.TRACE_NAME);
+    const parentCtx = propagation.extract(ROOT_CONTEXT, _trace);
+    const parentSpanContext = trace.getSpanContext(parentCtx);
+
     console.log(
       `Job ${job.id} failed, attempts made=${job.attemptsMade}/${job.opts.attempts}. Retry after ${job.delay}ms`,
     );
     console.error(`Reason: ${error}`);
-    const payload = job.data;
     const noMoreRetry =
       job.attemptsMade === job.opts.attempts! ||
       error instanceof UnrecoverableError;
-    await this.prisma.webhookEvent.update({
-      where: { id: payload.eventId },
-      data: {
-        status: noMoreRetry ? EventStatus.Failed : undefined,
-        attemptCount: job.attemptsMade,
-      },
-    });
     if (noMoreRetry) {
-      await this.webhooksDLQ.add(job.name, job.data, job.opts);
+      await tracer.startActiveSpan(
+        'webhook.dlq',
+        { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
+        async (span) => {
+          try {
+            await this.prisma.webhookEvent.update({
+              where: { id: eventId },
+              data: {
+                attemptCount: job.attemptsMade,
+                status: EventStatus.Failed,
+              },
+            });
+            await this.webhooksDLQ.add(job.name, job.data, job.opts);
+          } catch (error) {
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            span.recordException(error);
+            throw error;
+          } finally {
+            span.end();
+          }
+        },
+      );
+    } else {
+      await tracer.startActiveSpan(
+        'webhook.retry',
+        { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
+        async (span) => {
+          try {
+            await this.prisma.webhookEvent.update({
+              where: { id: eventId },
+              data: { attemptCount: job.attemptsMade },
+            });
+          } catch (error) {
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            span.recordException(error);
+            throw error;
+          } finally {
+            span.end();
+          }
+        },
+      );
     }
   }
 }

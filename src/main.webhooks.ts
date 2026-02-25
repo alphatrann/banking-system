@@ -1,3 +1,6 @@
+import { initTracer } from './telemetry';
+initTracer('banking-webhook-sender');
+
 import { NestFactory } from '@nestjs/core';
 import { WebhooksSenderModule } from './webhooks-sender/webhooks-sender.module';
 

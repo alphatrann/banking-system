@@ -48,6 +48,60 @@ services:
     volumes:
       - minio_data:/data
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: banking-system-prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: banking-system-grafana
+    ports:
+      - '6000:3000'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/grafana.ini:/etc/grafana/grafana.ini
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: 'Admin'
+      GF_SERVER_ROOT_URL: 'http://localhost:6000'
+    depends_on:
+      - otel-collector
+      - loki
+      - jaeger
+
+  loki:
+    image: grafana/loki:latest
+    container_name: banking-system-loki
+    ports:
+      - '3100:3100'
+    command: -config.file=/etc/loki/loki.yaml
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml
+
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    container_name: jaeger
+    ports:
+      - '6831:6831/udp' # UDP port for Jaeger agent
+      - '16686:16686' # Web UI
+      - '14268:14268' # HTTP port for spans
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: banking-system-otel-collector
+    command: ['--config=/etc/otel-collector/otel.yaml']
+    ports:
+      - '4317:4317' # OTLP gRPC receiver
+    volumes:
+      - ./otel-collector/otel.yaml:/etc/otel-collector/otel.yaml
+    depends_on:
+      - loki
+      - jaeger
+
 volumes:
   postgres-data:
   redis_data:

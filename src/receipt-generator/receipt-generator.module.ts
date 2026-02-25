@@ -7,6 +7,7 @@ import { QueuesModule } from '../queues/queues.module';
 import { ReceiptGenerator } from './receipt-generator';
 import { ReceiptsModule } from '../receipts/receipts.module';
 import { MinioModule } from '../minio/minio.module';
+import { WebhooksModule } from '../webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { MinioModule } from '../minio/minio.module';
     QueuesModule,
     MinioModule,
     MailModule,
+    WebhooksModule,
     ReceiptsModule,
   ],
   providers: [ReceiptGenerator],

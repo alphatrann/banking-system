@@ -1,0 +1,32 @@
+# where to receive observability data
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+extensions:
+  health_check: {}
+
+exporters:
+  #  export traces to jaeger
+  otlp:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # export metrics to prometheus
+  prometheus:
+    endpoint: 0.0.0.0:9090
+
+# pipeline wiring receivers, processors, exporters together
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp]
+
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus]
