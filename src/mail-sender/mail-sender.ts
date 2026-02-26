@@ -4,7 +4,7 @@ import {
   Processor,
   WorkerHost,
 } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, type LoggerService } from '@nestjs/common';
 import { DLQName, QueueName } from '../queues/enums';
 import { Job, Queue, UnrecoverableError } from 'bullmq';
 import { SendEmailJobPayload } from '../outbox/interfaces/job-payload';
@@ -19,6 +19,7 @@ import {
   SpanStatusCode,
   trace,
 } from '@opentelemetry/api';
+import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 @Injectable()
 @Processor(QueueName.Emails, {
@@ -33,6 +34,7 @@ export class MailSender extends WorkerHost {
     private mailService: MailService,
     private receiptsService: ReceiptsService,
     @InjectQueue(DLQName.EmailsDLQ) private emailDLQ: Queue,
+    @Inject(WINSTON_MODULE_NEST_PROVIDER) private logger: LoggerService,
   ) {
     super();
   }
@@ -40,10 +42,6 @@ export class MailSender extends WorkerHost {
   async process(job: Job<SendEmailJobPayload>): Promise<void> {
     const payload = job.data;
     const jobId = job.id!;
-
-    console.log(
-      `Job ${job.id} is being processed: attempts made=${job.attemptsMade}/${job.opts.attempts}`,
-    );
 
     if (!payload.transactionId) {
       throw new UnrecoverableError('Missing transaction ID');
@@ -112,6 +110,12 @@ export class MailSender extends WorkerHost {
           const { object, objectName, mimetype } =
             await this.receiptsService.getReceiptFile(payload.receiptId);
 
+          this.logger.log('mail.sending', {
+            component: 'mail',
+            jobId: job.id,
+            attempts: job.attemptsMade,
+          });
+
           await this.mailService.sendConfirmTransferEmail(
             account.email,
             {
@@ -137,6 +141,11 @@ export class MailSender extends WorkerHost {
             where: { id: jobId },
             data: { status: EventStatus.Done },
           });
+          this.logger.log('mail.send.success', {
+            component: 'mail',
+            jobId: job.id,
+            attempts: job.attemptsMade,
+          });
         } catch (error) {
           span.recordException(error);
           span.setStatus({ code: SpanStatusCode.ERROR });
@@ -154,10 +163,6 @@ export class MailSender extends WorkerHost {
     const tracer = trace.getTracer(this.TRACE_NAME);
     const parentCtx = propagation.extract(ROOT_CONTEXT, payload._trace ?? {});
     const parentSpanContext = trace.getSpanContext(parentCtx);
-    console.log(
-      `Job ${job.id} failed, attempts made=${job.attemptsMade}/${job.opts.attempts}. Retry after ${job.delay}ms`,
-    );
-    console.error(`Reason: ${error}`);
     if (
       job.attemptsMade === job.opts.attempts! ||
       error instanceof UnrecoverableError
@@ -177,9 +182,21 @@ export class MailSender extends WorkerHost {
               },
             });
             await this.emailDLQ.add(job.name, job.data, job.opts);
+            this.logger.error('mail.dlq.success', {
+              component: 'mail',
+              jobId: job.id,
+              attempts: job.attemptsMade,
+              error: error.stack,
+            });
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
+            this.logger.error('mail.dlq.failed', {
+              component: 'mail',
+              jobId: job.id,
+              attempts: job.attemptsMade,
+              error: error.stack,
+            });
             throw error;
           } finally {
             span.end();
@@ -198,9 +215,21 @@ export class MailSender extends WorkerHost {
                 attemptCount: job.attemptsMade,
               },
             });
+            this.logger.warn('mail.retry.scheduled', {
+              component: 'mail',
+              jobId: job.id,
+              attempts: job.attemptsMade,
+              error: error.stack,
+            });
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
+            this.logger.error('mail.retry.failed', {
+              component: 'mail',
+              jobId: job.id,
+              attempts: job.attemptsMade,
+              error: error.stack,
+            });
           } finally {
             span.end();
           }

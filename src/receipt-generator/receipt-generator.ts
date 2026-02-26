@@ -4,7 +4,7 @@ import {
   Processor,
   WorkerHost,
 } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, type LoggerService } from '@nestjs/common';
 import { DLQName, EventType, QueueName } from '../queues/enums';
 import { Job, Queue, UnrecoverableError } from 'bullmq';
 import { GenerateReceiptJobPayload } from '../outbox/interfaces/job-payload';
@@ -22,6 +22,7 @@ import {
   SpanStatusCode,
   trace,
 } from '@opentelemetry/api';
+import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 @Injectable()
 @Processor(QueueName.Receipts, {
@@ -35,6 +36,7 @@ export class ReceiptGenerator extends WorkerHost {
     private receiptsService: ReceiptsService,
     private webhooksService: WebhooksService,
     @InjectQueue(DLQName.ReceiptsDLQ) private receiptsDLQ: Queue,
+    @Inject(WINSTON_MODULE_NEST_PROVIDER) private logger: LoggerService,
   ) {
     super();
   }
@@ -71,12 +73,22 @@ export class ReceiptGenerator extends WorkerHost {
           const amount = Math.abs(Number(transaction.ledgerEntries[0].amount));
           await tracer.startActiveSpan('pdf.generate', async (span) => {
             try {
+              this.logger.log('receipt.generating', {
+                component: 'receipt',
+                jobId: job.id,
+                attempts: job.attemptsMade,
+              });
               await this.receiptsService.generateReceipt({
                 amount,
                 timestamp: new Date(),
                 fromAccountId,
                 toAccountId,
                 receiptNumber: job.data.receiptNumber,
+              });
+              this.logger.log('receipt.pdf.generated', {
+                component: 'receipt',
+                jobId: job.id,
+                attempts: job.attemptsMade,
               });
             } catch (error) {
               span.recordException(error);
@@ -148,6 +160,11 @@ export class ReceiptGenerator extends WorkerHost {
                 });
                 await tx.$executeRawUnsafe(`NOTIFY outbox_channel`);
               });
+              this.logger.log('outbox.email.created', {
+                component: 'receipt',
+                jobId: job.id,
+                attempts: job.attemptsMade,
+              });
             } catch (error) {
               span.recordException(error);
               span.setStatus({ code: SpanStatusCode.ERROR });
@@ -189,14 +206,32 @@ export class ReceiptGenerator extends WorkerHost {
               },
             });
             await this.receiptsDLQ.add(job.name, job.data, job.opts);
+            this.logger.error('receipt.dlq.success', {
+              component: 'receipt',
+              id: job.id,
+              attempts: job.attemptsMade,
+              error: error.stack,
+            });
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
-            throw error;
+            this.logger.error('receipt.dlq.failed', {
+              component: 'receipt',
+              id: job.id,
+              attempts: job.attemptsMade,
+              error: error.stack,
+            });
           } finally {
             span.end();
           }
         });
+      });
+    } else {
+      this.logger.warn('receipt.retry.scheduled', {
+        component: 'receipt',
+        id: job.id,
+        attempts: job.attemptsMade,
+        error: error.stack,
       });
     }
   }

@@ -6,6 +6,7 @@ import { MailSender } from './mail-sender';
 import { MailModule } from '../mail/mail.module';
 import { QueuesModule } from '../queues/queues.module';
 import { ReceiptsModule } from '../receipts/receipts.module';
+import { LoggerModule } from '../logger/logger.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { ReceiptsModule } from '../receipts/receipts.module';
       }),
     }),
     PrismaModule,
+    LoggerModule,
     QueuesModule,
     ReceiptsModule,
     MailModule,

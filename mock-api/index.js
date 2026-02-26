@@ -9,7 +9,7 @@ app.use(express.raw({ type: '*/*' }));
 /*                              CONFIGURATION                                 */
 /* -------------------------------------------------------------------------- */
 
-const PORT = 3000;
+const PORT = 8000;
 const SHARED_SECRET = process.env.WEBHOOK_SECRET;
 
 const MAX_REQUESTS_PER_WINDOW = 1;
@@ -43,6 +43,7 @@ function weightedScenario() {
 
 function verifySignature(req) {
   const signature = req.headers['x-webhook-signature']; // X-Webhook-Signature: t=1708700000,v1=abcdef123456...
+  if (!signature) return false;
 
   const [timestampPart, sigPart] = signature.split(',');
   const timestamp = timestampPart.split('=')[1];

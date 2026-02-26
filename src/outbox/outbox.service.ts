@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, type LoggerService } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { OutboxEventStatus } from '@prisma/client';
 import { EventType, QueueName } from '../queues/enums';
@@ -7,12 +7,12 @@ import { Queue } from 'bullmq';
 import { OUTBOX_MAX_ATTEMPTS } from '../constants';
 import { WebhookEventType } from '../webhooks/enums';
 import {
-  context,
   propagation,
   ROOT_CONTEXT,
   SpanStatusCode,
   trace,
 } from '@opentelemetry/api';
+import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 @Injectable()
 export class OutboxService {
@@ -20,6 +20,8 @@ export class OutboxService {
 
   constructor(
     private prisma: PrismaService,
+    @Inject(WINSTON_MODULE_NEST_PROVIDER)
+    private readonly logger: LoggerService,
     @InjectQueue(QueueName.Webhooks) private webhooksQueue: Queue,
     @InjectQueue(QueueName.Emails) private emailsQueue: Queue,
     @InjectQueue(QueueName.Receipts) private receiptsQueue: Queue,
@@ -57,15 +59,28 @@ export class OutboxService {
 
     if (toEnqueueJobs.length === 0) return;
     const enqueues = toEnqueueJobs.map(async (job) => {
-      console.log('Enqueueing job:', job);
       const tracer = trace.getTracer(this.TRACING_NAME);
       const parentCtx = propagation.extract(ROOT_CONTEXT, job.trace_context);
       const parentSpanContext = trace.getSpanContext(parentCtx);
-      tracer.startActiveSpan(
+      const startMs = Date.now();
+      await tracer.startActiveSpan(
         'outbox.process',
         { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
         async (span) => {
+          this.logger.log('outbox.dispatch', {
+            component: 'outbox',
+            jobId: job.id,
+            attempts: job.attempt_count,
+            durationMs: Date.now() - startMs,
+          });
           const payload = { ...job.payload, _trace: job.trace_context };
+          this.logger.debug?.('outbox.payload.prepare', {
+            component: 'outbox',
+            jobId: job.id,
+            eventType: job.event_type,
+            attempts: job.attempt_count,
+            payload: job.payload,
+          });
           try {
             switch (job.event_type) {
               case WebhookEventType.TransferCompleted:
@@ -93,9 +108,33 @@ export class OutboxService {
                 break;
             }
             span.setStatus({ code: SpanStatusCode.OK });
+            this.logger.log('outbox.enqueue.success', {
+              component: 'outbox',
+              jobId: job.id,
+              attempts: job.attempt_count,
+              durationMs: Date.now() - startMs,
+            });
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
+            if (job.attempt_count + 1 >= OUTBOX_MAX_ATTEMPTS) {
+              this.logger.error('outbox.enqueue.failed', {
+                component: 'outbox',
+                jobId: job.id,
+                attempts: job.attempt_count,
+                traceId: span.spanContext().traceId,
+                durationMs: Date.now() - startMs,
+                error: error.stack,
+              });
+            } else {
+              this.logger.warn('outbox.retry.scheduled', {
+                component: 'outbox',
+                jobId: job.id,
+                attempts: job.attempt_count,
+                durationMs: Date.now() - startMs,
+                error: error.stack,
+              });
+            }
             throw error;
           } finally {
             span.end();

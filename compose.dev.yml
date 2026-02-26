@@ -6,7 +6,7 @@ services:
     ports:
       - '5432:5432'
     volumes:
-      - /var/lib/postgresql:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -60,14 +60,20 @@ services:
     image: grafana/grafana:latest
     container_name: banking-system-grafana
     ports:
-      - '6000:3000'
+      - '3000:3000'
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
       - ./grafana/grafana.ini:/etc/grafana/grafana.ini
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: 'true'
       GF_AUTH_ANONYMOUS_ORG_ROLE: 'Admin'
-      GF_SERVER_ROOT_URL: 'http://localhost:6000'
+      GF_SERVER_ROOT_URL: 'http://localhost:3000'
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/api/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
     depends_on:
       - otel-collector
       - loki
@@ -103,7 +109,8 @@ services:
       - jaeger
 
 volumes:
-  postgres-data:
+  postgres_data:
   redis_data:
   minio_data:
   mailpit_data:
+  grafana_data:
