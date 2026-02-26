@@ -67,16 +67,14 @@ export class OutboxService {
         'outbox.process',
         { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
         async (span) => {
-          this.logger.log({
-            event: 'outbox.dispatch',
+          this.logger.log('outbox.dispatch', {
             component: 'outbox',
             jobId: job.id,
             attempts: job.attempt_count,
             durationMs: Date.now() - startMs,
           });
           const payload = { ...job.payload, _trace: job.trace_context };
-          this.logger.debug?.({
-            event: 'outbox.payload.prepare',
+          this.logger.debug?.('outbox.payload.prepare', {
             component: 'outbox',
             jobId: job.id,
             eventType: job.event_type,
@@ -110,8 +108,7 @@ export class OutboxService {
                 break;
             }
             span.setStatus({ code: SpanStatusCode.OK });
-            this.logger.log({
-              message: 'outbox.enqueue.success',
+            this.logger.log('outbox.enqueue.success', {
               component: 'outbox',
               jobId: job.id,
               attempts: job.attempt_count,
@@ -121,8 +118,7 @@ export class OutboxService {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
             if (job.attempt_count + 1 >= OUTBOX_MAX_ATTEMPTS) {
-              this.logger.error({
-                message: `outbox.enqueue.failed`,
+              this.logger.error('outbox.enqueue.failed', {
                 component: 'outbox',
                 jobId: job.id,
                 attempts: job.attempt_count,
@@ -131,8 +127,7 @@ export class OutboxService {
                 error: error.stack,
               });
             } else {
-              this.logger.warn({
-                message: `outbox.retry.scheduled`,
+              this.logger.warn('outbox.retry.scheduled', {
                 component: 'outbox',
                 jobId: job.id,
                 attempts: job.attempt_count,

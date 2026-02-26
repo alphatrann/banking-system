@@ -73,8 +73,7 @@ export class ReceiptGenerator extends WorkerHost {
           const amount = Math.abs(Number(transaction.ledgerEntries[0].amount));
           await tracer.startActiveSpan('pdf.generate', async (span) => {
             try {
-              this.logger.log({
-                event: 'receipt.generating',
+              this.logger.log('receipt.generating', {
                 component: 'receipt',
                 jobId: job.id,
                 attempts: job.attemptsMade,
@@ -86,8 +85,7 @@ export class ReceiptGenerator extends WorkerHost {
                 toAccountId,
                 receiptNumber: job.data.receiptNumber,
               });
-              this.logger.log({
-                event: 'receipt.pdf.generated',
+              this.logger.log('receipt.pdf.generated', {
                 component: 'receipt',
                 jobId: job.id,
                 attempts: job.attemptsMade,
@@ -162,8 +160,7 @@ export class ReceiptGenerator extends WorkerHost {
                 });
                 await tx.$executeRawUnsafe(`NOTIFY outbox_channel`);
               });
-              this.logger.log({
-                event: 'outbox.email.created',
+              this.logger.log('outbox.email.created', {
                 component: 'receipt',
                 jobId: job.id,
                 attempts: job.attemptsMade,
@@ -209,8 +206,7 @@ export class ReceiptGenerator extends WorkerHost {
               },
             });
             await this.receiptsDLQ.add(job.name, job.data, job.opts);
-            this.logger.error({
-              event: 'receipt.dlq.success',
+            this.logger.error('receipt.dlq.success', {
               component: 'receipt',
               id: job.id,
               attempts: job.attemptsMade,
@@ -219,8 +215,7 @@ export class ReceiptGenerator extends WorkerHost {
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
-            this.logger.error({
-              event: 'receipt.dlq.failed',
+            this.logger.error('receipt.dlq.failed', {
               component: 'receipt',
               id: job.id,
               attempts: job.attemptsMade,
@@ -232,8 +227,7 @@ export class ReceiptGenerator extends WorkerHost {
         });
       });
     } else {
-      this.logger.warn({
-        event: 'receipt.retry.scheduled',
+      this.logger.warn('receipt.retry.scheduled', {
         component: 'receipt',
         id: job.id,
         attempts: job.attemptsMade,

@@ -29,8 +29,7 @@ export class HttpLoggingInterceptor implements NestInterceptor {
       tap(() => {
         const span = trace.getSpan(context.active());
         const traceId = span?.spanContext().traceId;
-        this.logger.log({
-          event: 'http.success',
+        this.logger.log('http.success', {
           component: 'api',
           method,
           path,
@@ -41,8 +40,7 @@ export class HttpLoggingInterceptor implements NestInterceptor {
       catchError((err) => {
         const span = trace.getSpan(context.active());
         const traceId = span?.spanContext().traceId;
-        this.logger.error({
-          event: 'http.error',
+        this.logger.error('http.error', {
           component: 'api',
           method,
           path,

@@ -110,8 +110,7 @@ export class MailSender extends WorkerHost {
           const { object, objectName, mimetype } =
             await this.receiptsService.getReceiptFile(payload.receiptId);
 
-          this.logger.log({
-            event: 'mail.sending',
+          this.logger.log('mail.sending', {
             component: 'mail',
             jobId: job.id,
             attempts: job.attemptsMade,
@@ -142,8 +141,7 @@ export class MailSender extends WorkerHost {
             where: { id: jobId },
             data: { status: EventStatus.Done },
           });
-          this.logger.log({
-            event: 'mail.send.success',
+          this.logger.log('mail.send.success', {
             component: 'mail',
             jobId: job.id,
             attempts: job.attemptsMade,
@@ -184,8 +182,7 @@ export class MailSender extends WorkerHost {
               },
             });
             await this.emailDLQ.add(job.name, job.data, job.opts);
-            this.logger.error({
-              event: 'mail.dlq.success',
+            this.logger.error('mail.dlq.success', {
               component: 'mail',
               jobId: job.id,
               attempts: job.attemptsMade,
@@ -194,8 +191,7 @@ export class MailSender extends WorkerHost {
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
-            this.logger.error({
-              event: 'mail.dlq.failed',
+            this.logger.error('mail.dlq.failed', {
               component: 'mail',
               jobId: job.id,
               attempts: job.attemptsMade,
@@ -219,8 +215,7 @@ export class MailSender extends WorkerHost {
                 attemptCount: job.attemptsMade,
               },
             });
-            this.logger.warn({
-              event: 'mail.retry.scheduled',
+            this.logger.warn('mail.retry.scheduled', {
               component: 'mail',
               jobId: job.id,
               attempts: job.attemptsMade,
@@ -229,8 +224,7 @@ export class MailSender extends WorkerHost {
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
-            this.logger.error({
-              event: 'mail.retry.failed',
+            this.logger.error('mail.retry.failed', {
               component: 'mail',
               jobId: job.id,
               attempts: job.attemptsMade,

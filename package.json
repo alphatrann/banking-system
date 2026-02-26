@@ -33,7 +33,7 @@
     "studio:test": "dotenv -e .env.test.local -- npx prisma studio",
     "migrate:reset:dev": "dotenv -e .env.development.local -- npx prisma migrate reset --force",
     "migrate:reset:test": "dotenv -e .env.test.local -- npx prisma migrate reset --force",
-    "migrate:deploy:local": "dotenv -e .env.development.local -- npx prisma migrate deploy",
+    "migrate:deploy:dev": "dotenv -e .env.development.local -- npx prisma migrate deploy",
     "migrate:deploy:test": "dotenv -e .env.test.local -- npx prisma migrate deploy",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
