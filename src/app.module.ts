@@ -26,9 +26,13 @@ import { UserThrottlerGuard } from './guards/user-throttler.guard';
             ? '.env.test.local'
             : '.env.development.local',
       validationSchema: Joi.object({
-        DATABASE_URL: Joi.string().required(),
+        DATABASE_URL: Joi.string().uri({ scheme: 'postgres' }).required(),
         JWT_SECRET: Joi.string().required(),
-        MAIL_TRANSPORT: Joi.string().uri().required(),
+        MAIL_TRANSPORT: Joi.string()
+          .uri({ scheme: ['smtp', 'smtps'] })
+          .required(),
+        WEBHOOK_ENC_MASTER_KEY_V1: Joi.string().required(),
+        WEBHOOK_ENC_ACTIVE_KEY_VERSION: Joi.number().min(1).required(),
       }),
     }),
     UsersModule,

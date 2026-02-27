@@ -121,7 +121,6 @@ export class WebhooksSender extends WorkerHost {
               attempts: job.attemptsMade,
               webhookUrl: webhookEndpoint.url,
             });
-            const requestSentAtMs = Date.now();
             try {
               await this.handleRequest(
                 webhookEndpoint.url,
@@ -188,14 +187,6 @@ export class WebhooksSender extends WorkerHost {
         },
       });
       retryAfter = response.headers.get('retry-after');
-      await this.prisma.webhookAttempt.create({
-        data: {
-          durationMs: Date.now() - requestSentAtMs,
-          webhookEventId: eventId,
-          responseBody: body,
-          responseStatus: statusCode,
-        },
-      });
     } catch (error) {
       await this.prisma.webhookAttempt.create({
         data: {
@@ -272,7 +263,6 @@ export class WebhooksSender extends WorkerHost {
                 payload: payload as any,
                 endpointId: payload.endpointId,
                 status: EventStatus.Failed,
-                attemptCount: job.attemptsMade,
               },
               update: {
                 status: EventStatus.Failed,
@@ -284,6 +274,7 @@ export class WebhooksSender extends WorkerHost {
               component: 'webhooks',
               jobId: job.id,
               attempts: job.attemptsMade,
+              error,
             });
           } catch (error) {
             span.setStatus({ code: SpanStatusCode.ERROR });
@@ -292,6 +283,7 @@ export class WebhooksSender extends WorkerHost {
               component: 'webhooks',
               jobId: job.id,
               attempts: job.attemptsMade,
+              error,
             });
             throw error;
           } finally {
@@ -313,17 +305,15 @@ export class WebhooksSender extends WorkerHost {
                 payload: payload as any,
                 endpointId: payload.endpointId,
                 status: EventStatus.Processing,
-                attemptCount: job.attemptsMade,
               },
-              update: {
-                attemptCount: job.attemptsMade,
-              },
+              update: {},
             });
             this.logger.warn('webhooks.retry.scheduled', {
               component: 'webhooks',
               jobId: job.id,
               attempts: job.attemptsMade,
               retryAfterMs: job.delay,
+              error,
             });
           } catch (error) {
             span.setStatus({ code: SpanStatusCode.ERROR });
@@ -333,6 +323,7 @@ export class WebhooksSender extends WorkerHost {
               jobId: job.id,
               attempts: job.attemptsMade,
               retryAfterMs: job.delay,
+              error,
             });
             throw error;
           } finally {

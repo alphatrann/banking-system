@@ -27,6 +27,8 @@ import { LoggerModule } from '../logger/logger.module';
         MINIO_ACCESS_KEY: Joi.string().required(),
         MINIO_SECRET_KEY: Joi.string().required(),
         MINIO_PORT: Joi.string().required(),
+        RECEIPT_ENC_MASTER_KEY_V1: Joi.string().required(),
+        RECEIPT_ENC_ACTIVE_KEY_VERSION: Joi.number().min(1).required(),
       }),
     }),
     PrismaModule,

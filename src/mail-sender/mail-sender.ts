@@ -175,10 +175,9 @@ export class MailSender extends WorkerHost {
             await this.prisma.emailEvent.updateMany({
               where: { id: job.id! },
               data: {
-                attemptCount: job.attemptsMade,
                 status: EventStatus.Failed,
                 failedAt: new Date(),
-                failedReason: formatError(error),
+                error: formatError(error),
               },
             });
             await this.emailDLQ.add(job.name, job.data, job.opts);
@@ -209,22 +208,7 @@ export class MailSender extends WorkerHost {
         { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
         async (span) => {
           try {
-            await this.prisma.emailEvent.updateMany({
-              where: { id: job.id! },
-              data: {
-                attemptCount: job.attemptsMade,
-              },
-            });
             this.logger.warn('mail.retry.scheduled', {
-              component: 'mail',
-              jobId: job.id,
-              attempts: job.attemptsMade,
-              error: error.stack,
-            });
-          } catch (error) {
-            span.recordException(error);
-            span.setStatus({ code: SpanStatusCode.ERROR });
-            this.logger.error('mail.retry.failed', {
               component: 'mail',
               jobId: job.id,
               attempts: job.attemptsMade,

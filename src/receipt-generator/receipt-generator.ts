@@ -201,7 +201,7 @@ export class ReceiptGenerator extends WorkerHost {
               where: { number: payload.receiptNumber },
               data: {
                 status: EventStatus.Failed,
-                failedReason: formatError(error),
+                error: formatError(error),
                 failedAt: new Date(),
               },
             });
