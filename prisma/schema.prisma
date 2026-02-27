@@ -74,28 +74,33 @@ enum OutboxEventStatus {
 }
 
 model WebhookEndpoint {
-  id               String    @id @default(ulid())
-  accountId        String    @map("account_id")
-  url              String
-  secret           String
-  active           Boolean   @default(true)
-  subscribedEvents String[]  @map("subscribed_events")
-  deletedAt        DateTime? @map("deleted_at")
+  id                  String    @id @default(ulid())
+  accountId           String    @map("account_id")
+  url                 String
+  encryptedSecret     String
+  active              Boolean   @default(true)
+  subscribedEvents    String[]  @map("subscribed_events")
+  deletedAt           DateTime? @map("deleted_at")
+  iv                  String
+  authTag             String?   @map("auth_tag")
+  keyVersion          Int       @default(1) @map("key_version")
+  encryptionAlgorithm String    @map("encryption_algorithm")
 
-  account Account        @relation(fields: [accountId], references: [id])
-  events  WebhookEvent[]
+  account   Account        @relation(fields: [accountId], references: [id])
+  events    WebhookEvent[]
+  createdAt DateTime       @default(now()) @map("created_at")
 
+  @@unique([url, accountId])
   @@map("webhook_endpoints")
 }
 
 model EmailEvent {
-  id           String      @id
-  toAccountId  String      @map("to_account_id")
-  payload      Json        @db.JsonB
-  status       EventStatus @default(Pending)
-  attemptCount Int         @default(0) @map("attempt_count")
-  failedAt     DateTime?   @map("failed_at")
-  failedReason String?     @map("failed_reason")
+  id          String      @id
+  toAccountId String      @map("to_account_id")
+  payload     Json        @db.JsonB
+  status      EventStatus @default(Pending)
+  failedAt    DateTime?   @map("failed_at")
+  error       String?
 
   toAccount Account @relation(fields: [toAccountId], references: [id])
 
@@ -106,13 +111,12 @@ model EmailEvent {
 }
 
 model WebhookEvent {
-  id           String      @id
-  endpointId   String      @map("endpoint_id")
-  eventType    String      @map("event_type")
-  payload      Json        @db.JsonB
-  status       EventStatus @default(Pending)
-  attemptCount Int         @default(0) @map("attempt_count")
-  createdAt    DateTime    @default(now()) @map("created_at")
+  id         String      @id
+  endpointId String      @map("endpoint_id")
+  eventType  String      @map("event_type")
+  payload    Json        @db.JsonB
+  status     EventStatus @default(Pending)
+  createdAt  DateTime    @default(now()) @map("created_at")
 
   endpoint WebhookEndpoint  @relation(fields: [endpointId], references: [id])
   attempts WebhookAttempt[]
@@ -162,13 +166,17 @@ enum IdempotencyStatus {
 }
 
 model File {
-  id        String   @id @default(ulid())
-  bucket    String
-  object    String
-  size      BigInt
-  mimetype  String
-  createdAt DateTime @default(now()) @map("created_at")
-  receipt   Receipt?
+  id                  String   @id @default(ulid())
+  bucket              String
+  object              String
+  size                BigInt
+  mimetype            String
+  createdAt           DateTime @default(now()) @map("created_at")
+  receipt             Receipt?
+  iv                  String
+  authTag             String?  @map("auth_tag")
+  keyVersion          Int      @default(1) @map("key_version")
+  encryptionAlgorithm String   @map("encryption_algorithm")
 
   @@unique([bucket, object])
   @@map("files")
@@ -181,12 +189,12 @@ model Receipt {
   transactionId String   @unique @map("transaction_id")
   createdAt     DateTime @default(now()) @map("created_at")
 
-  file         File?       @relation(fields: [fileId], references: [id])
-  transaction  Transaction @relation(fields: [transactionId], references: [id])
-  status       EventStatus @default(Pending)
-  generatedAt  DateTime?   @map("generated_at")
-  failedAt     DateTime?   @map("failed_at")
-  failedReason String?     @map("failed_reason")
+  file        File?       @relation(fields: [fileId], references: [id])
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+  status      EventStatus @default(Pending)
+  generatedAt DateTime?   @map("generated_at")
+  failedAt    DateTime?   @map("failed_at")
+  error       String?
 
   @@map("receipts")
 }

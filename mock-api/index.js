@@ -12,7 +12,7 @@ app.use(express.raw({ type: '*/*' }));
 const PORT = 8000;
 const SHARED_SECRET = process.env.WEBHOOK_SECRET;
 
-const MAX_REQUESTS_PER_WINDOW = 1;
+const MAX_REQUESTS_PER_WINDOW = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
 let requestCount = 0;

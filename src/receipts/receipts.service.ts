@@ -5,9 +5,10 @@ import { formatUSD } from '../utils/formatter';
 import { InjectMinio } from '../minio/minio.decorator';
 import * as Minio from 'minio';
 import { PrismaService } from '../prisma/prisma.service';
-import { randomBytes } from 'crypto';
 import { EventStatus } from '@prisma/client';
-import { simulateError } from '../utils/simulation';
+import { ConfigService } from '@nestjs/config';
+import { randomBytes, createCipheriv, createDecipheriv } from 'crypto';
+import { PassThrough, Readable } from 'stream';
 
 @Injectable()
 export class ReceiptsService {
@@ -15,20 +16,75 @@ export class ReceiptsService {
 
   constructor(
     @InjectMinio() private minio: Minio.Client,
+    private configService: ConfigService,
     private prisma: PrismaService,
   ) {}
+
+  private encryptReceipt(buffer: Buffer) {
+    const keyVersion = +this.configService.getOrThrow(
+      'WEBHOOK_ENC_ACTIVE_KEY_VERSION',
+    );
+    const masterKey = this.configService.getOrThrow(
+      `WEBHOOK_ENC_MASTER_KEY_V${keyVersion}`,
+    );
+    const iv = randomBytes(12);
+    const cipher = createCipheriv(
+      'aes-256-gcm',
+      Buffer.from(masterKey, 'base64'),
+      iv,
+    );
+    const encrypted = Buffer.concat([cipher.update(buffer), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    return {
+      iv: iv.toString('hex'),
+      encrypted,
+      authTag: authTag.toString('hex'),
+      keyVersion,
+    };
+  }
+
+  private decryptReceipt(
+    encryptedFileStream: Readable,
+    iv: string,
+    authTag: string,
+    keyVersion: number,
+  ) {
+    const masterKey = this.configService.getOrThrow(
+      `WEBHOOK_ENC_MASTER_KEY_V${keyVersion}`,
+    );
+    const decipher = createDecipheriv(
+      'aes-256-gcm',
+      Buffer.from(masterKey, 'base64'),
+      Buffer.from(iv, 'hex'),
+    );
+    decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+    const passthrough = new PassThrough();
+    encryptedFileStream.pipe(decipher).pipe(passthrough);
+    return passthrough;
+  }
 
   async getReceiptFile(receiptId: string) {
     const {
       bucket,
       mimetype,
       object: objectName,
+      iv,
+      keyVersion,
+      authTag,
     } = await this.prisma.file.findFirstOrThrow({
       where: { receipt: { id: receiptId } },
-      select: { bucket: true, object: true, mimetype: true },
+      select: {
+        bucket: true,
+        object: true,
+        mimetype: true,
+        authTag: true,
+        keyVersion: true,
+        iv: true,
+      },
     });
     const object = await this.minio.getObject(bucket, objectName);
-    return { object, mimetype, objectName };
+    const decrypted = this.decryptReceipt(object, iv, authTag!, keyVersion);
+    return { object: decrypted, mimetype, objectName };
   }
 
   async generateReceipt(dto: GenerateReceiptDto) {
@@ -53,30 +109,23 @@ export class ReceiptsService {
       return;
     }
 
-    /**
-     * STEP 2 — Generate PDF buffer (deterministic)
-     */
     const buffer = await this.generatePdfBuffer(dto);
+    const { authTag, iv, keyVersion, encrypted } = this.encryptReceipt(buffer);
 
     const objectName = `receipt_${receiptNumber}.pdf`;
 
-    /**
-     * STEP 3 — Upload (overwrite safe)
-     */
     if (!(await this.minio.bucketExists(this.BUCKET_NAME))) {
       await this.minio.makeBucket(this.BUCKET_NAME);
     }
+
     await this.minio.putObject(
       this.BUCKET_NAME,
       objectName,
-      buffer,
+      encrypted,
       buffer.length,
       { 'Content-Type': 'application/pdf' },
     );
 
-    /**
-     * STEP 4 — Insert a file record
-     */
     await this.prisma.file.upsert({
       where: {
         bucket_object: { bucket: this.BUCKET_NAME, object: objectName },
@@ -85,6 +134,10 @@ export class ReceiptsService {
         bucket: this.BUCKET_NAME,
         object: objectName,
         size: buffer.length,
+        authTag,
+        keyVersion,
+        encryptionAlgorithm: 'aes-256-gcm',
+        iv,
         mimetype: 'application/pdf',
         receipt: {
           connect: { number: receiptNumber },
@@ -96,9 +149,6 @@ export class ReceiptsService {
       },
     });
 
-    /**
-     * STEP 5 — Mark receipt Done
-     */
     await this.prisma.receipt.update({
       where: { number: receiptNumber },
       data: {
