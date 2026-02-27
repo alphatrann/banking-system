@@ -13,12 +13,14 @@ import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { CurrentUser } from '../users/decorators';
 import type { Account } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards';
+import { minutes, Throttle } from '@nestjs/throttler';
 
 @Controller()
+@UseGuards(JwtAuthGuard)
 export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
-  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: minutes(1) } })
   @Post('transfer')
   async transfer(
     @Body() dto: CreateTransactionDto,
@@ -37,7 +39,7 @@ export class TransactionsController {
     );
   }
 
-  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 20, ttl: minutes(1) } })
   @Get('balance')
   async getBalance(@CurrentUser() account: Account) {
     const balance = await this.transactionsService.computeBalance(account.id);
