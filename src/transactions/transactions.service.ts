@@ -43,7 +43,7 @@ export class TransactionsService {
   ) {
     const tracer = trace.getTracer(this.TRACER_NAME);
 
-    return tracer.startActiveSpan('money.transfer', async (span) => {
+    return await tracer.startActiveSpan('money.transfer', async (span) => {
       try {
         span.setAttribute('transaction.amount', dto.amount);
         span.setAttribute('transaction.from_account', fromAccountId);
@@ -52,7 +52,12 @@ export class TransactionsService {
 
         const requestHash = this.hashRequest(idempotencyKey, dto);
 
-        await this.checkIdempotency(fromAccountId, idempotencyKey, requestHash);
+        const existingResponseBody = await this.checkIdempotency(
+          fromAccountId,
+          idempotencyKey,
+          requestHash,
+        );
+        if (existingResponseBody) return existingResponseBody;
 
         const responseBody = await this.createTransaction(fromAccountId, dto);
 
@@ -86,7 +91,7 @@ export class TransactionsService {
   ) {
     const tracer = trace.getTracer(this.TRACER_NAME);
 
-    return tracer.startActiveSpan('idempotency.check', async (span) => {
+    return await tracer.startActiveSpan('idempotency.check', async (span) => {
       try {
         await this.prisma.idempotencyKey.create({
           data: {

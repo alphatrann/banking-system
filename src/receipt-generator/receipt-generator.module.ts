@@ -22,6 +22,7 @@ import { LoggerModule } from '../logger/logger.module';
             : '.env.development.local',
       validationSchema: Joi.object({
         DATABASE_URL: Joi.string().required(),
+        CACHE_URL: Joi.string().uri({ scheme: 'redis' }).required(),
         MAIL_TRANSPORT: Joi.string().uri().required(),
         MINIO_ENDPOINT: Joi.string().required(),
         MINIO_ACCESS_KEY: Joi.string().required(),

@@ -2,9 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
+import { AppModule } from '../src/app.module';
 import { generateId } from '../src/utils/id';
-import { sleep } from '../src/utils/timer';
+import { ThrottlerGuard } from '@nestjs/throttler';
+import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Positive balance after concurrent transactions test', () => {
   let app: INestApplication<App>;
@@ -14,9 +15,13 @@ describe('Positive balance after concurrent transactions test', () => {
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideGuard(ThrottlerGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     app = moduleFixture.createNestApplication();
+    console.log('NODE_ENV:', process.env.NODE_ENV);
     await app.init();
 
     const accountPayload = {
@@ -38,11 +43,29 @@ describe('Positive balance after concurrent transactions test', () => {
         email: `user_${Date.now()}_${Math.random()}@test.com`,
       });
     accessToken = firstAccountLoginResponse.body.accessToken;
+    console.log({ regData: destinationAccountRegisterResponse.body });
     toAccountId = destinationAccountRegisterResponse.body.data.id;
   });
 
   afterEach(async () => {
+    const prisma = app.get(PrismaService);
+    await prisma.$disconnect();
     await app.close();
+  });
+
+  it('two transactions with the same idempotency key should not double charge', async () => {
+    const idempotencyKey = 'single-key';
+    async function transfer() {
+      return await request(app.getHttpServer())
+        .post('/transfer')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('X-Idempotency-Key', idempotencyKey)
+        .send({ amount: 10, toAccountId });
+    }
+    const firstTransferResponse = await transfer();
+    const secondTransferResponse = await transfer();
+
+    expect(firstTransferResponse.body).toEqual(secondTransferResponse.body);
   });
 
   it('the final balance should never be negative after multiple transactions', async () => {
@@ -52,8 +75,6 @@ describe('Positive balance after concurrent transactions test', () => {
         .set('Authorization', `Bearer ${accessToken}`)
         .set('X-Idempotency-Key', generateId('ik'))
         .send({ amount: 30, toAccountId });
-
-      await sleep(100);
     });
 
     await Promise.allSettled(concurrentTransactions);
@@ -63,7 +84,6 @@ describe('Positive balance after concurrent transactions test', () => {
       .set('Authorization', `Bearer ${accessToken}`)
       .expect(200);
 
-    console.log({ balanceResponse: balanceResponse.body });
     // the result may not be 10 due to serialization behavior, but most importantly, the balance is never negative
     expect(balanceResponse.body.balance).toBeGreaterThanOrEqual(0);
   });

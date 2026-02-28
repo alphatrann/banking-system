@@ -1,1 +1,1 @@
-yarn migrate:reset:test && yarn test:e2e
+yarn migrate:reset:test && yarn test:e2e --detectOpenHandles

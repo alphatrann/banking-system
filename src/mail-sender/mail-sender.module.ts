@@ -20,7 +20,10 @@ import { LoggerModule } from '../logger/logger.module';
             : '.env.development.local',
       validationSchema: Joi.object({
         DATABASE_URL: Joi.string().required(),
-        MAIL_TRANSPORT: Joi.string().uri().required(),
+        MAIL_TRANSPORT: Joi.string()
+          .uri({ scheme: ['smtp', 'smtps'] })
+          .required(),
+        CACHE_URL: Joi.string().uri({ scheme: 'redis' }).required(),
       }),
     }),
     PrismaModule,

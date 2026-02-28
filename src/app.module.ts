@@ -27,6 +27,7 @@ import { UserThrottlerGuard } from './guards/user-throttler.guard';
             : '.env.development.local',
       validationSchema: Joi.object({
         DATABASE_URL: Joi.string().uri({ scheme: 'postgres' }).required(),
+        CACHE_URL: Joi.string().uri({ scheme: 'redis' }).required(),
         JWT_SECRET: Joi.string().required(),
         MAIL_TRANSPORT: Joi.string()
           .uri({ scheme: ['smtp', 'smtps'] })
@@ -43,18 +44,24 @@ import { UserThrottlerGuard } from './guards/user-throttler.guard';
     WebhooksModule,
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        storage: new ThrottlerStorageRedisService(
-          configService.getOrThrow('CACHE_URL'),
-        ),
-        throttlers: [
-          {
-            name: 'default',
-            ttl: seconds(+configService.get('THROTTLE_TTL') || 60),
-            limit: +configService.get('THROTTLE_LIMIT') || 100,
-          },
-        ],
-      }),
+      useFactory: (configService: ConfigService) => {
+        if (configService.get('NODE_ENV') === 'test') {
+          return { throttlers: [] };
+        }
+
+        return {
+          storage: new ThrottlerStorageRedisService(
+            configService.getOrThrow('CACHE_URL'),
+          ),
+          throttlers: [
+            {
+              name: 'default',
+              ttl: seconds(+configService.get('THROTTLE_TTL') || 60),
+              limit: +configService.get('THROTTLE_LIMIT') || 100,
+            },
+          ],
+        };
+      },
     }),
   ],
   providers: [

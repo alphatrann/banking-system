@@ -1,35 +1,24 @@
-name: payment-system
+name: banking-system-test
 services:
   postgres:
     image: postgres:alpine
-    container_name: payment-system-postgres-test
+    container_name: banking-system-postgres-test
     ports:
-      - '5433:5432'
-    volumes:
-      - /var/lib/postgresql:/var/lib/postgresql
+      - '5432:5432'
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=payment-system
+      - POSTGRES_DB=banking-system-test
 
   redis:
     image: redis:alpine
-    container_name: payment-system-redis-test
-    restart: always
+    container_name: banking-system-redis-test
     ports:
-      - '6380:6379'
-    volumes:
-      - redis_data:/data
-      - ./redis.conf:/usr/local/etc/redis/redis.conf
-    command: ['redis-server', '/usr/local/etc/redis/redis.conf']
-
-  mail:
-    container_name: payment-system-mail-test
-    image: jijiechen/papercut:latest
-    ports:
-      - 26:25
-      - 37409:37408
+      - '6379:6379'
 
 volumes:
-  postgres-data:
+  postgres_data:
   redis_data:
+  minio_data:
+  mailpit_data:
+  grafana_data:
