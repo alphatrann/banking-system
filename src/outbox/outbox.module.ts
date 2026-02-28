@@ -18,7 +18,7 @@ import { LoggerModule } from '../logger/logger.module';
             : '.env.development.local',
       validationSchema: Joi.object({
         DATABASE_URL: Joi.string().required(),
-        CACHE_URL: Joi.string().uri().required(),
+        CACHE_URL: Joi.string().uri({ scheme: 'redis' }).required(),
       }),
     }),
     QueuesModule,

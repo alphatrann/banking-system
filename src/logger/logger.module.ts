@@ -30,32 +30,42 @@ const traceFormat = winston.format((info) => {
           winston.format.errors({ stack: true }),
           winston.format.json(),
         ),
-        transports: [
-          new winston.transports.Console({
-            format: winston.format.combine(
-              winston.format.timestamp(),
-              winston.format.json(),
-            ),
-          }), // print JSON in the console
-          new LokiTransport({
-            replaceTimestamp: true,
-            host: configService.getOrThrow('LOKI_URL'),
-            labels: { app: 'banking-system' },
-            format: winston.format((info) => {
-              info.labels = {
-                level: info.level,
-                component: info.component ?? 'unknown',
-                event: info.message,
-              };
-              return info;
-            })(),
-            interval: 1,
-            batching: false,
-            onConnectionError: (err) => {
-              console.error('Loki error:', err);
-            },
-          }),
-        ],
+        transports:
+          configService.get('NODE_ENV') === 'test'
+            ? [
+                new winston.transports.Console({
+                  format: winston.format.combine(
+                    winston.format.timestamp(),
+                    winston.format.json(),
+                  ),
+                }), // print JSON in the console
+              ]
+            : [
+                new winston.transports.Console({
+                  format: winston.format.combine(
+                    winston.format.timestamp(),
+                    winston.format.json(),
+                  ),
+                }), // print JSON in the console
+                new LokiTransport({
+                  replaceTimestamp: true,
+                  host: configService.getOrThrow('LOKI_URL'),
+                  labels: { app: 'banking-system' },
+                  format: winston.format((info) => {
+                    info.labels = {
+                      level: info.level,
+                      component: info.component ?? 'unknown',
+                      event: info.message,
+                    };
+                    return info;
+                  })(),
+                  interval: 1,
+                  batching: false,
+                  onConnectionError: (err) => {
+                    console.error('Loki error:', err);
+                  },
+                }),
+              ],
       }),
     }),
   ],
