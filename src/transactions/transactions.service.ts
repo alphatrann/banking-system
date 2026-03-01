@@ -9,12 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { generateId } from '../utils/id';
 import { hash } from '../utils/hash';
-import {
-  IdempotencyStatus,
-  Prisma,
-  EventStatus,
-  Transaction,
-} from '@prisma/client';
+import { IdempotencyStatus, Prisma, EventStatus } from '@prisma/client';
 import {
   isForeignKeyViolation,
   isSerializationFailure,

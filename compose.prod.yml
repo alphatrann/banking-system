@@ -20,7 +20,9 @@ services:
       - storage-net
 
   migrate:
-    image: banking-system:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: banking-system-migrate
     depends_on:
       postgres:
@@ -33,7 +35,9 @@ services:
     command: ['yarn', 'migrate:deploy:prod']
 
   api1:
-    image: banking-system:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: banking-system-api1
     expose:
       - 5000
@@ -52,7 +56,9 @@ services:
       - obs-net
 
   api2:
-    image: banking-system:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: banking-system-api2
     depends_on:
       migrate:
@@ -71,7 +77,9 @@ services:
       - obs-net
 
   api3:
-    image: banking-system:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: banking-system-api3
     depends_on:
       migrate:
@@ -90,7 +98,9 @@ services:
       - obs-net
 
   outbox:
-    image: banking-system:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: banking-system-outbox
     env_file:
       - .env.production.local
@@ -105,7 +115,9 @@ services:
       - obs-net
 
   mail-sender:
-    image: banking-system:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: banking-system-mail-sender
     env_file:
       - .env.production.local
@@ -126,7 +138,9 @@ services:
       - obs-net
 
   receipt-generator:
-    image: banking-system:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: banking-system-receipt-generator
     env_file:
       - .env.production.local
@@ -144,7 +158,9 @@ services:
       - obs-net
 
   webhooks-sender:
-    image: banking-system:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: banking-system-webhooks-sender
     env_file:
       - .env.production.local

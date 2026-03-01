@@ -1,98 +1,196 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Banking System
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+## Overview
+This is a **backend-only simulation** of a banking system that enables two accounts to send and receive money.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+The purpose of building the system is to learn:
+- Transactional outbox pattern
+- Job retries and DLQs
+- Ledger entries to derive account balance
+- Idempotency
+- Database transaction isolation level
+- Observability and structured logging
+- Reverse proxy
+- Encryption
+- Rate limiting (simple fixed window algorithm)
 
-## Description
+What's not included (for now):
+* Frontend
+* Secure auth
+* Clean code
+* High-coverage testing
+* HTTPS and DNS configurations
+* Advanced rate limiting strategies
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Requirements
 
-## Project setup
+### Functional Requirements
 
+- FR-01: Register an account (email, password)
+- FR-02: Sign in to an existing account (email, password)
+- FR-03: Transfer money to another account
+- FR-04: View the account balance
+- FR-05: Both the sender and receiver must receive an email after the transaction.
+- FR-06: The email should include a **transfer receipt (PDF)** as an attachment
+- FR-07: Manage Webhook Endpoints
+    - Create a webhook endpoint (URL)
+    - Generate/store secret
+    - Enable/disable endpoint
+    - Select subscribed events (`transfer.completed`, `transfer.failed`, `receipt.generated`)
+    - Delete endpoint
+- FR-08: All active registered endpoints associated with the sender and receiver must receive webhook requests after the transaction
+
+### Non-Functional Requirements
+
+#### Observability
+- NFR-01: Every request should have tracing info
+- NFR-02: Every HTTP requests and important worker events (success, fail, retry) must be logged
+
+#### Security
+- NFR-04: Sending webhook events must include a secure signature in the request header and event ID for idempotency checks
+- NFR-06: Transaction API endpoint should be rate-limited per IP and account (authenticated endpoints) to prevent abuse
+- NFR-10: Receipts and webhook secrets must be encrypted at rest
+
+#### Performance
+- NFR-05: Transactions should happen under 1 second (background jobs for non-customer-facing tasks)
+
+#### Data Integrity
+- NFR-03: The balance must never be negative despite multiple concurrent transactions.
+- NFR-07: The balance must be derived from the ledger table, not a single value.
+- NFR-08: Transactions must be idempotent, and don’t charge twice
+
+#### Robustness
+- NFR-09: Repeatedly failed jobs must be sent to DLQ
+
+## Tech Stack
+
+### Framework
+**NodeJS** and **NestJS** to build the backend due to clean and standardized OO architectural patterns. They are used to build both the API and the workers
+
+### Authentication strategy
+**JWT** for simple authentication with very short-lived access tokens (30 minutes) and no refresh token for now to mitigate account impersonation
+
+### Databases
+
+- **PostgreSQL** for the primary database due to its ACID property, isolation level, row-locking feature that are essential for data integrity in the payment system
+- **Redis** with **BullMQ** for job queue because it fits NodeJS harmoniously with minimal setup compared to RabbitMQ while minimizing job loss with RDB + AOF. Also, **Redis** is used as a storage for rate limiting.
+
+### Observability
+- **Prometheus** for analytics tracking and real-time monitoring
+- **OpenTelemetry (OTel)** for observability, tracing and metrics collection
+- **Grafana** dashboard for analysis and visualization based on the data gathered from Prometheus and OpenTelemetry
+- **Loki** for log collection with Winston (although it can integrate with OTel, the library isn't that mature)
+- **Jaeger** for trace visualization (in-memory storage for now, feel free to add storage like Elasticsearch)
+- **Mailpit** for sending and receiving emails locally
+
+### File Storage
+**MinIO** for S3-like storage
+
+### Containerization
+**Docker**
+
+## Architecture
+
+![System Architecture](./architecture.png)
+
+The system architecture consists of these main components:
+- A reverse proxy (nginx) to receive requests from the clients and forward them to the APIs through different load balancing methods.
+- An API gateway to receive requests.
+- Outbox workers to ensure jobs are both stored in the database and enqueued atomically. Once ledger entries are successfully stored in the database, outbox events are also stored in the database within the same database transaction. These outbox workers run in separate processes to poll these outbox events from the database and enqueue them in Redis.
+- 3 types of workers: webhook senders, sending emails and generating PDF receipts. Each of which can be scaled based on actual demands. They consume jobs enqueued by outbox workers, retry failed jobs and store them in DLQs if they repeatedly failed.
+- Observability infra: OTel collector receives, processes and exports traces to Jager for visualization, and metrics to Prometheus.
+- Loki directly connects to NestJS Winston to collect logs, which are then exported to Grafana for queries and visualization.
+
+## Setup & Installation
+### Prerequisites
+* Node.js 22 or higher (not needed for production use)
+* Docker
+
+Clone the repo:
 ```bash
-$ yarn install
+git clone https://github.com/alphatrann/banking-system.git
 ```
 
-## Compile and run the project
+### Production
 
+Copy `.env.example` to `.env.production.local`
 ```bash
-# development
-$ yarn run start
-
-# watch mode
-$ yarn run start:dev
-
-# production mode
-$ yarn run start:prod
+cp .env.example .env.production.local
 ```
 
-## Run tests
+Then modify the environment variables in the copied file based on your needs.
 
+Start Docker compose stack for production (remember to start Docker Desktop first):
 ```bash
-# unit tests
-$ yarn run test
-
-# e2e tests
-$ yarn run test:e2e
-
-# test coverage
-$ yarn run test:cov
+docker compose -f compose.prod.yml up -d
 ```
 
-## Deployment
+The API is available at [localhost](http://localhost). Feel free to practice deploying to a VPS and config HTTPS and domain names.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
+### Development
+Install yarn if you haven't
 ```bash
-$ yarn install -g @nestjs/mau
-$ mau deploy
+npm i -g yarn@latest
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Install all the dependencies
+```bash
+yarn
+```
 
-## Resources
+Copy `.env.example` to `.env.development.local`
+```bash
+cp .env.example .env.development.local
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+Then modify the environment variables in the copied file based on your needs.
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+Start Docker compose stack for development (remember to start Docker Desktop first):
+```bash
+docker compose -f compose.dev.yml up -d
+```
 
-## Support
+Apply Prisma migrations
+```bash
+yarn migrate:deploy:dev
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+Run each command below **in separate terminals** to start API and workers development servers:
+```bash
+yarn start:dev:api # API
+yarn start:dev:outbox # Outbox worker
+yarn start:dev:mail # Mail sender
+yarn start:dev:receipt # Receipt generator
+yarn start:dev:webhooks # Webhooks sender
+```
 
-## Stay in touch
+The API is available at [localhost:5000](http://localhost:5000)
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+
+There are only 3 e2e tests in the [test/ directory](./test/), run them by:
+```bash
+sh e2e.sh
+```
+
+You can read all the available scripts in the [package.json file](./package.json).
+
+## Dashboards
+### Development
+* Swagger UI: [localhost:5000/api](http://localhost:5000/api)
+* Jaeger UI: [localhost:16686](http://localhost:16686)
+* Mailpit Inbox: [localhost:8025](http://localhost:8025)
+* Grafana: [localhost:3000](http://localhost:3000)
+* MinIO [localhost:9001](http://localhost:9001): login with the username and password in the `.env.development.local` file
+
+### Production
+All the dashboards are configured with `localhost` subdomains:
+
+* Swagger UI: [localhost/api](http://localhost/api)
+* Jaeger UI: [jaeger.localhost](http://jaeger.localhost)
+* Mailpit Inbox: [mail.localhost](http://mail.localhost)
+* Grafana: [grafana.localhost](http://grafana.localhost)
+* MinIO [minio.localhost](http://minio.localhost): login with the username and password in the `.env.production.local` file
 
 ## License
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+[MIT](./LICENSE)
