@@ -1,12 +1,12 @@
-name: banking-system
+name: banking-system-dev
 services:
   postgres:
     image: postgres:alpine
-    container_name: banking-system-postgres
+    container_name: banking-system-postgres-dev
     ports:
       - '5432:5432'
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - postgres_data_dev:/var/lib/postgresql
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -14,16 +14,16 @@ services:
 
   redis:
     image: redis:alpine
-    container_name: banking-system-redis
+    container_name: banking-system-redis-dev
     ports:
       - '6379:6379'
     volumes:
-      - redis_data:/data
+      - redis_data_dev:/data
       - ./redis.conf:/usr/local/etc/redis/redis.conf
     command: ['redis-server', '/usr/local/etc/redis/redis.conf']
 
   mail:
-    container_name: banking-system-mail
+    container_name: banking-system-mail-dev
     image: axllent/mailpit:latest
     ports:
       - 8025:8025
@@ -32,25 +32,24 @@ services:
       - MP_DATABASE=/data/mailpit.db
       - TZ=Asia/Saigon
     volumes:
-      - mailpit_data:/data
+      - mailpit_data_dev:/data
 
   minio:
     image: minio/minio:latest
-    container_name: banking-system-minio
+    container_name: banking-system-minio-dev
     ports:
       - '9000:9000'
       - '9001:9001' # MinIO Console port
     environment:
       MINIO_ROOT_USER: 'admin'
       MINIO_ROOT_PASSWORD: 'password'
-      MINIO_DEFAULT_BUCKETS: 'banking-system'
     command: server /data --console-address ":9001"
     volumes:
-      - minio_data:/data
+      - minio_data_dev:/data
 
   prometheus:
     image: prom/prometheus:latest
-    container_name: banking-system-prometheus
+    container_name: banking-system-prometheus-dev
     ports:
       - '9090:9090'
     volumes:
@@ -58,30 +57,26 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    container_name: banking-system-grafana
+    container_name: banking-system-grafana-dev
     ports:
       - '3000:3000'
     volumes:
-      - grafana_data:/var/lib/grafana
+      - grafana_data_dev:/var/lib/grafana
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
       - ./grafana/grafana.ini:/etc/grafana/grafana.ini
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: 'true'
       GF_AUTH_ANONYMOUS_ORG_ROLE: 'Admin'
       GF_SERVER_ROOT_URL: 'http://localhost:3000'
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:3000/api/health']
-      interval: 30s
-      timeout: 10s
-      retries: 3
     depends_on:
+      - prometheus
       - otel-collector
       - loki
       - jaeger
 
   loki:
     image: grafana/loki:latest
-    container_name: banking-system-loki
+    container_name: banking-system-loki-dev
     ports:
       - '3100:3100'
     command: -config.file=/etc/loki/loki.yaml
@@ -90,7 +85,7 @@ services:
 
   jaeger:
     image: jaegertracing/jaeger:latest
-    container_name: banking-system-jaeger
+    container_name: banking-system-jaeger-dev
     ports:
       - '6831:6831/udp' # UDP port for Jaeger agent
       - '16686:16686' # Web UI
@@ -98,7 +93,7 @@ services:
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
-    container_name: banking-system-otel-collector
+    container_name: banking-system-otel-collector-dev
     command: ['--config=/etc/otel-collector/otel.yaml']
     ports:
       - '4317:4317' # OTLP gRPC receiver
@@ -109,8 +104,8 @@ services:
       - jaeger
 
 volumes:
-  postgres_data:
-  redis_data:
-  minio_data:
-  mailpit_data:
-  grafana_data:
+  postgres_data_dev:
+  redis_data_dev:
+  minio_data_dev:
+  mailpit_data_dev:
+  grafana_data_dev:

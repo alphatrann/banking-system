@@ -19,8 +19,6 @@ config({
         : '.env.development.local',
 });
 
-console.log('OTel collector URL:', process.env.OTEL_COLLECTOR_URL);
-
 export function initTracer(serviceName: string) {
   if (process.env.NODE_ENV === 'test') return;
   const traceExporter = new OTLPTraceExporter({

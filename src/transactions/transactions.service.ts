@@ -9,7 +9,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { generateId } from '../utils/id';
 import { hash } from '../utils/hash';
-import { IdempotencyStatus, Prisma, EventStatus } from '@prisma/client';
+import {
+  IdempotencyStatus,
+  Prisma,
+  EventStatus,
+  Transaction,
+} from '@prisma/client';
 import {
   isForeignKeyViolation,
   isSerializationFailure,
@@ -153,9 +158,13 @@ export class TransactionsService {
   ) {
     const tracer = trace.getTracer(this.TRACER_NAME);
 
-    return tracer.startActiveSpan('transaction.create', async (span) => {
+    return await tracer.startActiveSpan('transaction.create', async (span) => {
       try {
-        let responseBody: any;
+        let responseBody: {
+          statusCode: number;
+          error?: string;
+          transaction?: { id: string; amount: number; createdAt: string };
+        };
 
         for (
           let attempt = 1;
@@ -163,12 +172,37 @@ export class TransactionsService {
           attempt++
         ) {
           try {
-            await this.prisma.$transaction(
+            responseBody = await this.prisma.$transaction(
               async (tx) => {
+                const fromBalance = await this.computeBalance(
+                  fromAccountId,
+                  tx,
+                );
+
+                if (dto.toAccountId === fromAccountId)
+                  return {
+                    statusCode: HttpStatus.BAD_REQUEST,
+                    error:
+                      'Source account and destination account must be different',
+                  };
+
+                if (dto.amount > fromBalance) {
+                  return {
+                    statusCode: HttpStatus.BAD_REQUEST,
+                    error: 'Insufficient balance',
+                  };
+                }
+
+                const toBalance = await this.computeBalance(
+                  dto.toAccountId,
+                  tx,
+                );
                 const transaction = await this.handleTransaction(
                   fromAccountId,
                   tx,
                   dto,
+                  fromBalance,
+                  toBalance,
                 );
 
                 const { number } = await tx.receipt.create({
@@ -213,7 +247,7 @@ export class TransactionsService {
                   tx,
                 );
 
-                responseBody = {
+                return {
                   statusCode: HttpStatus.CREATED,
                   transaction: {
                     id: transaction.id,
@@ -227,7 +261,7 @@ export class TransactionsService {
               },
             );
 
-            break;
+            return responseBody;
           } catch (error: any) {
             if (
               isSerializationFailure(error) &&
@@ -237,13 +271,16 @@ export class TransactionsService {
             }
 
             if (error instanceof BadRequestException) {
-              return error.getResponse();
+              return {
+                statusCode: error.getStatus(),
+                error: error.message,
+              };
             }
 
             if (isForeignKeyViolation(error)) {
               return {
                 statusCode: HttpStatus.NOT_FOUND,
-                error: "Destination account doesn't exist.",
+                error: "Destination account doesn't exist",
               };
             }
 
@@ -257,7 +294,7 @@ export class TransactionsService {
           }
         }
 
-        return responseBody;
+        return responseBody!;
       } finally {
         span.end();
       }
@@ -291,7 +328,8 @@ export class TransactionsService {
               );
 
             const toEndpoints =
-              responseBody.statusCode === HttpStatus.NOT_FOUND
+              responseBody.statusCode === HttpStatus.NOT_FOUND ||
+              dto.toAccountId === fromAccountId
                 ? []
                 : await this.webhooksService.findRegisteredEndpointIds(
                     WebhookEventType.TransferFailed,
@@ -343,18 +381,9 @@ export class TransactionsService {
     fromAccountId: string,
     tx: Prisma.TransactionClient,
     dto: CreateTransactionDto,
+    fromBalance: number,
+    toBalance: number,
   ) {
-    const fromBalance = await this.computeBalance(fromAccountId, tx);
-
-    if (dto.amount > fromBalance) {
-      throw new BadRequestException({
-        statusCode: HttpStatus.BAD_REQUEST,
-        error: 'Insufficient balance',
-      });
-    }
-
-    const toBalance = await this.computeBalance(dto.toAccountId, tx);
-
     return tx.transaction.create({
       data: {
         id: generateId('txn'),
