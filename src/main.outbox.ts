@@ -19,7 +19,6 @@ async function bootstrap() {
   await listener.connect();
   await listener.query('LISTEN outbox_channel');
   listener.on('notification', async () => {
-    console.log('New outbox event arrived');
     await outboxService.pollOutbox();
   });
 

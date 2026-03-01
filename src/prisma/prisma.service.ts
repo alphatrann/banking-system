@@ -11,13 +11,12 @@ export class PrismaService
   constructor(configService: ConfigService) {
     const log: Prisma.LogDefinition[] = [
       { emit: 'stdout', level: 'query' },
-      { emit: 'stdout', level: 'error' },
       { emit: 'stdout', level: 'info' },
       { emit: 'stdout', level: 'warn' },
+      { emit: 'stdout', level: 'error' },
     ];
-    if (configService.get('NODE_ENV') === 'production') log.shift();
     super({
-      log,
+      log: configService.get('NODE_ENV') === 'production' ? log.slice(1) : log,
       adapter: new PrismaPg({
         connectionString: configService.getOrThrow<string>('DATABASE_URL'),
       }),

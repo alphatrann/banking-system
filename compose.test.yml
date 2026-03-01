@@ -15,10 +15,3 @@ services:
     container_name: banking-system-redis-test
     ports:
       - '6379:6379'
-
-volumes:
-  postgres_data:
-  redis_data:
-  minio_data:
-  mailpit_data:
-  grafana_data:

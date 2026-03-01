@@ -50,7 +50,7 @@ export function buildFailureOutboxJobs(
     const eventId = generateId('evt');
     return {
       id: jobId,
-      aggregateId: transaction.id,
+      aggregateId: `${transaction.id}:${endpointId}`,
       traceContext: carrier,
       aggregateType: 'Transaction',
       eventType: WebhookEventType.TransferFailed,

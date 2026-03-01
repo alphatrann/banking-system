@@ -1,0 +1,9 @@
+node_modules
+dist
+.env*
+grafana/
+loki/
+mock-api/
+otel-collector/
+e2e.sh
+test/

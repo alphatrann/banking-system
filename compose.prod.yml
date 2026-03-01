@@ -1,0 +1,301 @@
+name: banking-system-prod
+services:
+  proxy:
+    image: nginx:1.29.5-alpine
+    container_name: banking-system-proxy
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - api1
+      - api2
+      - api3
+    networks:
+      - public-net
+      - app-net
+      - mail-net
+      - obs-net
+      - storage-net
+
+  migrate:
+    image: banking-system:latest
+    container_name: banking-system-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.production.local
+    networks:
+      - app-net
+      - data-net
+    command: ['yarn', 'migrate:deploy:prod']
+
+  api1:
+    image: banking-system:latest
+    container_name: banking-system-api1
+    expose:
+      - 5000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    env_file:
+      - .env.production.local
+    networks:
+      - app-net
+      - data-net
+      - obs-net
+
+  api2:
+    image: banking-system:latest
+    container_name: banking-system-api2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    expose:
+      - 5000
+    env_file:
+      - .env.production.local
+    networks:
+      - app-net
+      - data-net
+      - obs-net
+
+  api3:
+    image: banking-system:latest
+    container_name: banking-system-api3
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    expose:
+      - 5000
+    env_file:
+      - .env.production.local
+    networks:
+      - app-net
+      - data-net
+      - obs-net
+
+  outbox:
+    image: banking-system:latest
+    container_name: banking-system-outbox
+    env_file:
+      - .env.production.local
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    command: ['yarn', 'start:prod:outbox']
+    networks:
+      - data-net
+      - obs-net
+
+  mail-sender:
+    image: banking-system:latest
+    container_name: banking-system-mail-sender
+    env_file:
+      - .env.production.local
+    command: ['yarn', 'start:prod:mail']
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      mail:
+        condition: service_started
+      minio:
+        condition: service_started
+    networks:
+      - data-net
+      - storage-net
+      - mail-net
+      - obs-net
+
+  receipt-generator:
+    image: banking-system:latest
+    container_name: banking-system-receipt-generator
+    env_file:
+      - .env.production.local
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    command: ['yarn', 'start:prod:receipt']
+    networks:
+      - data-net
+      - storage-net
+      - obs-net
+
+  webhooks-sender:
+    image: banking-system:latest
+    container_name: banking-system-webhooks-sender
+    env_file:
+      - .env.production.local
+    command: ['yarn', 'start:prod:webhooks']
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    networks:
+      - app-net
+      - data-net
+      - obs-net
+
+  postgres:
+    image: postgres:alpine
+    container_name: banking-system-postgres-prod
+    expose:
+      - 5432
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=banking-system
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - data-net
+
+  redis:
+    image: redis:alpine
+    container_name: banking-system-redis-prod
+    expose:
+      - 6379
+    volumes:
+      - redis_data_prod:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: ['redis-server', '/usr/local/etc/redis/redis.conf']
+    networks:
+      - data-net
+
+  mail:
+    container_name: banking-system-mail-prod
+    image: axllent/mailpit:latest
+    expose:
+      - 1025
+      - 8025
+    environment:
+      - MP_DATABASE=/data/mailpit.db
+      - TZ=Asia/Saigon
+    volumes:
+      - mailpit_data_prod:/data
+    networks:
+      - mail-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: banking-system-minio-prod
+    expose:
+      - 9000
+      - 9001
+    environment:
+      MINIO_ROOT_USER: 'admin'
+      MINIO_ROOT_PASSWORD: 'password'
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data_prod:/data
+    networks:
+      - storage-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: banking-system-prometheus-prod
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - obs-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: banking-system-grafana-prod
+    volumes:
+      - grafana_data_prod:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/grafana.ini:/etc/grafana/grafana.ini
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: 'Admin'
+    expose:
+      - 3000
+    depends_on:
+      - otel-collector
+      - loki
+      - jaeger
+      - prometheus
+    networks:
+      - obs-net
+
+  loki:
+    image: grafana/loki:latest
+    container_name: banking-system-loki-prod
+    expose:
+      - 3100
+    command: -config.file=/etc/loki/loki.yaml
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml
+    networks:
+      - obs-net
+
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    container_name: banking-system-jaeger-prod
+    expose:
+      - 14268
+      - 16686
+    networks:
+      - obs-net
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: banking-system-otel-collector-prod
+    command: ['--config=/etc/otel-collector/otel.yaml']
+    volumes:
+      - ./otel-collector/otel.yaml:/etc/otel-collector/otel.yaml
+    expose:
+      - 4317
+    depends_on:
+      - loki
+      - jaeger
+    networks:
+      - obs-net
+
+volumes:
+  postgres_data_prod:
+  redis_data_prod:
+  minio_data_prod:
+  mailpit_data_prod:
+  grafana_data_prod:
+
+networks:
+  public-net:
+  app-net:
+  storage-net:
+    internal: true
+  mail-net:
+    internal: true
+  data-net:
+    internal: true
+  obs-net:
+    internal: true

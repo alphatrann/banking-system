@@ -13,7 +13,6 @@ export class UserThrottlerGuard extends ThrottlerGuard {
           token,
           process.env.JWT_SECRET!,
         ) as jwt.JwtPayload;
-        console.log(`User ID: ${payload.sub}`);
         return `user-${payload.sub}`;
       } catch {
         return `ip-${req.ip}`;

@@ -40,7 +40,6 @@ const backoffStrategy: BackoffStrategy = (attemptsMade, type, err) => {
     2 ** attemptsMade * 1000 * (1 + Math.random()),
     5 * 60_000,
   );
-  console.log('Exponential Delay:', backoff);
   return backoff;
 };
 

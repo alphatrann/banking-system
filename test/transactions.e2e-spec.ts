@@ -21,7 +21,6 @@ describe('Positive balance after concurrent transactions test', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
-    console.log('NODE_ENV:', process.env.NODE_ENV);
     await app.init();
 
     const accountPayload = {
@@ -43,7 +42,6 @@ describe('Positive balance after concurrent transactions test', () => {
         email: `user_${Date.now()}_${Math.random()}@test.com`,
       });
     accessToken = firstAccountLoginResponse.body.accessToken;
-    console.log({ regData: destinationAccountRegisterResponse.body });
     toAccountId = destinationAccountRegisterResponse.body.data.id;
   });
 
