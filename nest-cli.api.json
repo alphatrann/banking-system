@@ -5,6 +5,7 @@
   "entryFile": "main.api",
   "compilerOptions": {
     "deleteOutDir": true,
+    "plugins": ["@nestjs/swagger"],
     "assets": ["mail/templates/**/*"],
     "watchAssets": true
   }

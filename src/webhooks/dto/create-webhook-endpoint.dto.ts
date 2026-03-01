@@ -14,7 +14,7 @@ export class CreateWebhookEndpointDto {
   @IsEnum(WebhookEventType, { each: true })
   @ApiProperty({
     description: `Must be one of the following values: ${Object.values(WebhookEventType).join(', ')}`,
-    examples: Object.values(WebhookEventType),
+    example: Object.values(WebhookEventType),
   })
   subscribedEvents: WebhookEventType[];
 }

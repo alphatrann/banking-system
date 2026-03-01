@@ -176,6 +176,7 @@ You can read all the available scripts in the [package.json file](./package.json
 
 ## Dashboards
 ### Development
+* Swagger UI: [localhost:5000/api](http://localhost:5000/api)
 * Jaeger UI: [localhost:16686](http://localhost:16686)
 * Mailpit Inbox: [localhost:8025](http://localhost:8025)
 * Grafana: [localhost:3000](http://localhost:3000)
@@ -184,6 +185,7 @@ You can read all the available scripts in the [package.json file](./package.json
 ### Production
 All the dashboards are configured with `localhost` subdomains:
 
+* Swagger UI: [localhost/api](http://localhost/api)
 * Jaeger UI: [jaeger.localhost](http://jaeger.localhost)
 * Mailpit Inbox: [mail.localhost](http://mail.localhost)
 * Grafana: [grafana.localhost](http://grafana.localhost)
