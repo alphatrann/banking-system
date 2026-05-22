@@ -14,6 +14,7 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { HttpLoggingInterceptor } from './logger/http-logging.interceptor';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { UserThrottlerGuard } from './guards/user-throttler.guard';
+import { MetricsModule } from './metrics/metrics.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { UserThrottlerGuard } from './guards/user-throttler.guard';
         };
       },
     }),
+    MetricsModule,
   ],
   providers: [
     AppService,

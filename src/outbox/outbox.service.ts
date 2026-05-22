@@ -13,6 +13,12 @@ import {
   trace,
 } from '@opentelemetry/api';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import {
+  jobsAddedTotal,
+  outboxEnqueueFailuresTotal,
+  outboxEventsProcessedTotal,
+  outboxProcessingDelaySeconds,
+} from '../metrics';
 
 @Injectable()
 export class OutboxService {
@@ -33,6 +39,7 @@ export class OutboxService {
         {
           id: string;
           event_type: EventType | WebhookEventType;
+          created_at: Date;
           attempt_count: number;
           payload: object;
           trace_context: Record<string, string>;
@@ -51,7 +58,7 @@ export class OutboxService {
           FOR UPDATE SKIP LOCKED
           LIMIT 50
         )
-        RETURNING id, event_type, payload, attempt_count, trace_context;
+        RETURNING id, event_type, payload, created_at, attempt_count, trace_context;
     `;
 
       return pendingJobs;
@@ -114,6 +121,9 @@ export class OutboxService {
               attempts: job.attempt_count,
               durationMs: Date.now() - startMs,
             });
+            outboxProcessingDelaySeconds.record(
+              (performance.now() - job.created_at.getTime()) / 1000,
+            );
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
@@ -144,6 +154,7 @@ export class OutboxService {
     });
 
     const results = await Promise.allSettled(enqueues);
+    outboxEventsProcessedTotal.add(results.length);
     const successIds = toEnqueueJobs
       .filter((_, i) => results[i].status === 'fulfilled')
       .map((job) => job.id);
@@ -154,6 +165,9 @@ export class OutboxService {
           results[i].status === 'rejected',
       )
       .map((job) => job.id);
+
+    jobsAddedTotal.add(toEnqueueJobs.length);
+    outboxEnqueueFailuresTotal.add(failedIds.length);
 
     await this.prisma.outboxEvent.updateMany({
       where: { id: { in: successIds } },
