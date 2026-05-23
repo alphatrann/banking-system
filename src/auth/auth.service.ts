@@ -3,6 +3,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { AccountsService } from '../users/accounts.service';
 import { CreateAccountDto } from '../users/dto/create-account.dto';
 import { JwtService } from '@nestjs/jwt';
+import { authFailuresTotal } from '../metrics';
 
 @Injectable()
 export class AuthService {
@@ -28,6 +29,7 @@ export class AuthService {
       return account;
     } catch (error) {
       // for security reasons
+      authFailuresTotal.add(1);
       throw new BadRequestException({
         success: false,
         message: 'Wrong email or password provided',
