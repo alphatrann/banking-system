@@ -20,6 +20,16 @@ import {
   trace,
 } from '@opentelemetry/api';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import {
+  duplicatedJobsPreventedTotal,
+  jobProcessingDurationSeconds,
+  jobsDlqTotal,
+  jobsFailedTotal,
+  jobsProcessedTotal,
+  jobsRetriedTotal,
+  jobWaitDurationSeconds,
+  poisonJobsTotal,
+} from '../metrics';
 
 @Injectable()
 @Processor(QueueName.Emails, {
@@ -40,10 +50,22 @@ export class MailSender extends WorkerHost {
   }
 
   async process(job: Job<SendEmailJobPayload>): Promise<void> {
+    const start = performance.now();
     const payload = job.data;
     const jobId = job.id!;
+    jobWaitDurationSeconds.record((start - job.timestamp) / 1000, {
+      queue: QueueName.Emails,
+    });
 
     if (!payload.transactionId) {
+      jobsFailedTotal.add(1, {
+        queue: QueueName.Emails,
+        reason: 'missing_transaction_id',
+      });
+      poisonJobsTotal.add(1, {
+        queue: QueueName.Emails,
+        reason: 'missing_transaction_id',
+      });
       throw new UnrecoverableError('Missing transaction ID');
     }
     const tracer = trace.getTracer(this.TRACE_NAME);
@@ -59,9 +81,29 @@ export class MailSender extends WorkerHost {
             include: { ledgerEntries: { orderBy: { amount: 'asc' } } },
           });
 
-          if (!transaction) throw new Error('Transaction not found');
-          if (transaction.ledgerEntries.length !== 2)
-            throw new Error('Invalid ledger state');
+          if (!transaction) {
+            jobsFailedTotal.add(1, {
+              queue: QueueName.Emails,
+              reason: 'transaction_not_found',
+            });
+            poisonJobsTotal.add(1, {
+              queue: QueueName.Emails,
+              reason: 'transaction_not_found',
+            });
+            throw new UnrecoverableError('Transaction not found');
+          }
+
+          if (transaction.ledgerEntries.length !== 2) {
+            jobsFailedTotal.add(1, {
+              queue: QueueName.Emails,
+              reason: 'invalid_ledger_entries',
+            });
+            poisonJobsTotal.add(1, {
+              queue: QueueName.Emails,
+              reason: 'invalid_ledger_entries',
+            });
+            throw new UnrecoverableError('Invalid ledger state');
+          }
 
           const [{ accountId: fromAccountId }, { accountId: toAccountId }] =
             transaction.ledgerEntries;
@@ -81,6 +123,11 @@ export class MailSender extends WorkerHost {
             update: {},
           });
           if (event.status === EventStatus.Done && event.sentAt) {
+            jobsProcessedTotal.add(1, {
+              queue: QueueName.Emails,
+              status: 'success',
+            });
+            duplicatedJobsPreventedTotal.add(1, { queue: QueueName.Emails });
             return;
           }
 
@@ -95,6 +142,14 @@ export class MailSender extends WorkerHost {
           });
 
           if (!account) {
+            jobsFailedTotal.add(1, {
+              queue: QueueName.Emails,
+              reason: 'account_not_found',
+            });
+            poisonJobsTotal.add(1, {
+              queue: QueueName.Emails,
+              reason: 'account_not_found',
+            });
             throw new UnrecoverableError('Cannot find account to send email');
           }
           span.setAttribute('mail.to', account.email);
@@ -146,11 +201,27 @@ export class MailSender extends WorkerHost {
             jobId: job.id,
             attempts: job.attemptsMade,
           });
+          jobsProcessedTotal.add(1, {
+            queue: QueueName.Emails,
+            status: 'success',
+          });
         } catch (error) {
           span.recordException(error);
           span.setStatus({ code: SpanStatusCode.ERROR });
+          jobsProcessedTotal.add(1, {
+            queue: QueueName.Emails,
+            status: 'failed',
+          });
           throw error;
         } finally {
+          if (job.attemptsMade > 0)
+            jobsRetriedTotal.add(1, { queue: QueueName.Emails });
+          jobProcessingDurationSeconds.record(
+            (performance.now() - start) / 1000,
+            {
+              queue: QueueName.Emails,
+            },
+          );
           span.end();
         }
       },
@@ -187,6 +258,13 @@ export class MailSender extends WorkerHost {
               attempts: job.attemptsMade,
               error: error.stack,
             });
+            jobsDlqTotal.add(1, {
+              queue: QueueName.Emails,
+              reason:
+                error instanceof UnrecoverableError
+                  ? 'unrecoverable'
+                  : 'max_attempts_reached',
+            });
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
@@ -195,6 +273,10 @@ export class MailSender extends WorkerHost {
               jobId: job.id,
               attempts: job.attemptsMade,
               error: error.stack,
+            });
+            jobsFailedTotal.add(1, {
+              queue: QueueName.Emails,
+              reason: 'dlq_enqueue_failed',
             });
             throw error;
           } finally {

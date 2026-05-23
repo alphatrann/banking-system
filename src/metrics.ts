@@ -126,21 +126,28 @@ export const jobsAddedTotal = meter.createCounter('jobs_added_total', {
   description: 'Total jobs added to queues',
 });
 
-export const jobsCompletedTotal = meter.createCounter('jobs_completed_total', {
-  description: 'Total completed jobs',
+export const jobsProcessedTotal = meter.createCounter('jobs_processed_total', {
+  description: 'Total processed jobs',
 });
 
 export const jobsFailedTotal = meter.createCounter('jobs_failed_total', {
   description: 'Total failed jobs',
 });
 
-export const jobsRetriedTotal = meter.createCounter('jobs_retried_total', {
-  description: 'Total retried jobs',
-});
-
 export const jobsDlqTotal = meter.createCounter('jobs_dlq_total', {
   description: 'Total jobs moved to DLQ',
 });
+
+export const jobsRetriedTotal = meter.createCounter('jobs_retried_total', {
+  description: 'Total jobs retried',
+});
+
+export const duplicatedJobsPreventedTotal = meter.createCounter(
+  'duplicated_jobs_prevented_total',
+  {
+    description: 'Total duplicate jobs prevented',
+  },
+);
 
 export const jobProcessingDurationSeconds = meter.createHistogram(
   'job_processing_duration_seconds',
@@ -160,34 +167,6 @@ export const jobWaitDurationSeconds = meter.createHistogram(
 
 /**
  * ---------------------------------------------------
- * RECEIPT WORKER METRICS
- * ---------------------------------------------------
- */
-
-export const receiptGenerationDurationSeconds = meter.createHistogram(
-  'receipt_generation_duration_seconds',
-  {
-    description: 'Receipt generation duration',
-    unit: 's',
-  },
-);
-
-/**
- * ---------------------------------------------------
- * EMAIL WORKER METRICS
- * ---------------------------------------------------
- */
-
-export const emailSendDurationSeconds = meter.createHistogram(
-  'email_send_duration_seconds',
-  {
-    description: 'Email sending duration',
-    unit: 's',
-  },
-);
-
-/**
- * ---------------------------------------------------
  * WEBHOOK METRICS
  * ---------------------------------------------------
  */
@@ -199,27 +178,11 @@ export const webhookDeliveryTotal = meter.createCounter(
   },
 );
 
-export const webhookDeliveryDurationSeconds = meter.createHistogram(
-  'webhook_delivery_duration_seconds',
-  {
-    description: 'Webhook delivery duration',
-    unit: 's',
-  },
-);
-
 /**
  * ---------------------------------------------------
  * RETRY / DLQ METRICS
  * ---------------------------------------------------
  */
-
-export const retryAttemptsTotal = meter.createCounter('retry_attempts_total', {
-  description: 'Total retry attempts',
-});
-
-export const dlqMessagesTotal = meter.createCounter('dlq_messages_total', {
-  description: 'Total DLQ messages',
-});
 
 export const poisonJobsTotal = meter.createCounter('poison_jobs_total', {
   description: 'Total poison jobs detected',
