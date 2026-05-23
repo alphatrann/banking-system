@@ -53,7 +53,7 @@ export class MailSender extends WorkerHost {
     const start = performance.now();
     const payload = job.data;
     const jobId = job.id!;
-    jobWaitDurationSeconds.record((start - job.timestamp) / 1000, {
+    jobWaitDurationSeconds.record((Date.now() - job.timestamp) / 1000, {
       queue: QueueName.Emails,
     });
 

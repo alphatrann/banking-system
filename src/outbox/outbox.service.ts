@@ -70,7 +70,7 @@ export class OutboxService {
       const parentCtx = propagation.extract(ROOT_CONTEXT, job.trace_context);
       const parentSpanContext = trace.getSpanContext(parentCtx);
       const startMs = Date.now();
-      await tracer.startActiveSpan(
+      return tracer.startActiveSpan(
         'outbox.process',
         { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
         async (span) => {
@@ -115,15 +115,15 @@ export class OutboxService {
                 break;
             }
             span.setStatus({ code: SpanStatusCode.OK });
+            outboxProcessingDelaySeconds.record(
+              (Date.now() - job.created_at.getTime()) / 1000,
+            );
             this.logger.log('outbox.enqueue.success', {
               component: 'outbox',
               jobId: job.id,
               attempts: job.attempt_count,
               durationMs: Date.now() - startMs,
             });
-            outboxProcessingDelaySeconds.record(
-              (performance.now() - job.created_at.getTime()) / 1000,
-            );
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });

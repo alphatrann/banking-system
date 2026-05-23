@@ -74,7 +74,7 @@ export class WebhooksSender extends WorkerHost {
 
   async process(job: Job<SendWebhookJobPayload>): Promise<void> {
     const start = performance.now();
-    jobWaitDurationSeconds.record((start - job.timestamp) / 1000, {
+    jobWaitDurationSeconds.record((Date.now() - job.timestamp) / 1000, {
       queue: QueueName.Webhooks,
     });
     const { endpointId, eventId, _trace, ...payload } = job.data;

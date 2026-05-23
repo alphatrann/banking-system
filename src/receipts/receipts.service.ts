@@ -117,7 +117,14 @@ export class ReceiptsService {
     try {
       await this.minio.makeBucket(this.BUCKET_NAME);
     } catch (err: any) {
-      if (err?.code !== 'BucketAlreadyExists') {
+      const isS3Error = err instanceof Minio.S3Error;
+      if (
+        isS3Error &&
+        (err.code === 'BucketAlreadyOwnedByYou' ||
+          err.code === 'BucketAlreadyExists')
+      ) {
+        // Bucket already exists, which is fine
+      } else {
         throw err;
       }
     }

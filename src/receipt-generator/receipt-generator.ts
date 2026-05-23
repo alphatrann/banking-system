@@ -54,7 +54,7 @@ export class ReceiptGenerator extends WorkerHost {
   async process(job: Job<GenerateReceiptJobPayload>): Promise<void> {
     const start = performance.now();
     const payload = job.data;
-    jobWaitDurationSeconds.record((start - job.timestamp) / 1000, {
+    jobWaitDurationSeconds.record((Date.now() - job.timestamp) / 1000, {
       queue: QueueName.Receipts,
     });
 
