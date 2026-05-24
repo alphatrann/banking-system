@@ -76,6 +76,9 @@ export class MailSender extends WorkerHost {
       { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
       async (span) => {
         try {
+          span.setAttribute('transaction.id', payload.transactionId);
+          span.setAttribute('job.id', jobId);
+          span.setAttribute('queue.name', QueueName.Emails);
           const transaction = await this.prisma.transaction.findUnique({
             where: { id: payload.transactionId },
             include: { ledgerEntries: { orderBy: { amount: 'asc' } } },

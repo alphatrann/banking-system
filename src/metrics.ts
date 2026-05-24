@@ -227,18 +227,3 @@ export const transferAmountHistogram = meter.createHistogram(
     description: 'Distribution of transfer amounts',
   },
 );
-
-/**
- * ---------------------------------------------------
- * END-TO-END SYSTEM METRICS
- * ---------------------------------------------------
- */
-
-export const transferEndToEndDurationSeconds = meter.createHistogram(
-  'transfer_end_to_end_duration_seconds',
-  {
-    description:
-      'Total duration from API request until all async workflows complete',
-    unit: 's',
-  },
-);

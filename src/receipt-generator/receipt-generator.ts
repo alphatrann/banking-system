@@ -32,6 +32,8 @@ import {
   jobsFailedTotal,
   jobProcessingDurationSeconds,
   duplicatedJobsPreventedTotal,
+  dbTransactionDurationSeconds,
+  activeDbTransactions,
 } from '../metrics';
 
 @Injectable()
@@ -83,6 +85,7 @@ export class ReceiptGenerator extends WorkerHost {
             where: { id: payload.transactionId },
             include: { ledgerEntries: { orderBy: { amount: 'asc' } } },
           });
+          span.setAttribute('transaction.id', payload.transactionId);
           span.setAttribute('receipt.number', payload.receiptNumber);
           span.setAttribute('receipt.attempts_made', job.attemptsMade);
 
@@ -153,8 +156,12 @@ export class ReceiptGenerator extends WorkerHost {
           });
 
           await tracer.startActiveSpan('outbox.email.create', async (span) => {
+            const start = performance.now();
             try {
               await this.prisma.$transaction(async (tx) => {
+                activeDbTransactions.add(1, {
+                  operation: 'create_outbox_email',
+                });
                 const { id: receiptId } = await tx.receipt.findUniqueOrThrow({
                   where: { number: job.data.receiptNumber },
                   select: { id: true },
@@ -223,6 +230,15 @@ export class ReceiptGenerator extends WorkerHost {
               span.setStatus({ code: SpanStatusCode.ERROR });
               throw error;
             } finally {
+              activeDbTransactions.add(-1, {
+                operation: 'create_outbox_email',
+              });
+              dbTransactionDurationSeconds.record(
+                (performance.now() - start) / 1000,
+                {
+                  operation: 'create_outbox_email',
+                },
+              );
               span.end();
             }
           });

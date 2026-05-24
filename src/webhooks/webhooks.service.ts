@@ -13,6 +13,7 @@ import { generateId } from '../utils/id';
 import { isRecordNotFound, isUniqueViolation } from '../prisma/error-codes';
 import { WebhookEventType } from './enums';
 import { ConfigService } from '@nestjs/config';
+import { activeDbTransactions, dbTransactionDurationSeconds } from '../metrics';
 
 @Injectable()
 export class WebhooksService {
@@ -177,6 +178,8 @@ export class WebhooksService {
 
   async update(id: string, accountId: string, dto: UpdateWebhookEndpointDto) {
     return this.prisma.$transaction(async (tx) => {
+      const start = performance.now();
+      activeDbTransactions.add(1, { operation: 'update_webhook_endpoint' });
       const endpoint = await tx.webhookEndpoint.findUnique({
         where: { id, accountId, deletedAt: null },
         select: {
@@ -223,7 +226,10 @@ export class WebhooksService {
           subscribedEvents: true,
         },
       });
-
+      dbTransactionDurationSeconds.record(performance.now() - start, {
+        operation: 'update_webhook_endpoint',
+      });
+      activeDbTransactions.add(-1, { operation: 'update_webhook_endpoint' });
       return updated;
     });
   }

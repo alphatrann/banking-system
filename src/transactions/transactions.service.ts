@@ -203,7 +203,7 @@ export class TransactionsService {
           try {
             responseBody = await this.prisma.$transaction(
               async (tx) => {
-                activeDbTransactions.add(1, { phase: 'create_transfer' });
+                activeDbTransactions.add(1, { operation: 'create_transfer' });
                 const fromBalance = await this.computeBalance(
                   fromAccountId,
                   tx,
@@ -299,7 +299,7 @@ export class TransactionsService {
             dbTransactionDurationSeconds.record(
               (performance.now() - start) / 1000,
               {
-                phase: 'create_transfer',
+                operation: 'create_transfer',
                 attempt,
                 status: 'success',
               },
@@ -309,9 +309,9 @@ export class TransactionsService {
             dbTransactionDurationSeconds.record(
               (performance.now() - start) / 1000,
               {
-                phase: 'create_transfer',
+                operation: 'create_transfer',
                 attempt,
-                status: 'failure',
+                status: 'failed',
               },
             );
             if (
@@ -350,7 +350,7 @@ export class TransactionsService {
 
         return responseBody!;
       } finally {
-        activeDbTransactions.add(-1, { phase: 'create_transfer' });
+        activeDbTransactions.add(-1, { operation: 'create_transfer' });
         span.end();
       }
     });
@@ -372,7 +372,7 @@ export class TransactionsService {
       const start = performance.now();
       try {
         await this.prisma.$transaction(async (tx) => {
-          activeDbTransactions.add(1, { phase: 'finalize_transfer' });
+          activeDbTransactions.add(1, { operation: 'finalize_transfer' });
           if (responseBody.statusCode !== HttpStatus.CREATED) {
             const carrier: Record<string, string> = {};
             propagation.inject(context.active(), carrier);
@@ -422,19 +422,19 @@ export class TransactionsService {
         });
         dbTransactionDurationSeconds.record(
           (performance.now() - start) / 1000,
-          { phase: 'finalize_transfer', status: 'success' },
+          { operation: 'finalize_transfer', status: 'success' },
         );
       } catch (error) {
         dbTransactionDurationSeconds.record(
           (performance.now() - start) / 1000,
-          { phase: 'finalize_transfer', status: 'failure' },
+          { operation: 'finalize_transfer', status: 'failed' },
         );
         span.recordException(error);
         span.setStatus({ code: SpanStatusCode.ERROR });
         throw error;
       } finally {
         span.end();
-        activeDbTransactions.add(-1, { phase: 'finalize_transfer' });
+        activeDbTransactions.add(-1, { operation: 'finalize_transfer' });
       }
     });
   }

@@ -34,17 +34,16 @@ export class OutboxService {
   ) {}
 
   async pollOutbox() {
-    const toEnqueueJobs = await this.prisma.$transaction(async (tx) => {
-      const pendingJobs = await tx.$queryRaw<
-        {
-          id: string;
-          event_type: EventType | WebhookEventType;
-          created_at: Date;
-          attempt_count: number;
-          payload: object;
-          trace_context: Record<string, string>;
-        }[]
-      >`
+    const toEnqueueJobs = await this.prisma.$queryRaw<
+      {
+        id: string;
+        event_type: EventType | WebhookEventType;
+        created_at: Date;
+        attempt_count: number;
+        payload: object;
+        trace_context: Record<string, string>;
+      }[]
+    >`
         UPDATE outbox_events
         SET status = 'Processing',
             attempt_count = attempt_count + 1,
@@ -61,9 +60,6 @@ export class OutboxService {
         RETURNING id, event_type, payload, created_at, attempt_count, trace_context;
     `;
 
-      return pendingJobs;
-    });
-
     if (toEnqueueJobs.length === 0) return;
     const enqueues = toEnqueueJobs.map(async (job) => {
       const tracer = trace.getTracer(this.TRACING_NAME);
@@ -74,6 +70,10 @@ export class OutboxService {
         'outbox.process',
         { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
         async (span) => {
+          span.setAttribute('outbox.event_id', job.id);
+          span.setAttribute('outbox.event_type', job.event_type);
+          span.setAttribute('outbox.attempts_made', job.attempt_count);
+
           this.logger.log('outbox.dispatch', {
             component: 'outbox',
             jobId: job.id,
@@ -166,7 +166,7 @@ export class OutboxService {
       )
       .map((job) => job.id);
 
-    jobsAddedTotal.add(toEnqueueJobs.length);
+    jobsAddedTotal.add(successIds.length);
     outboxEnqueueFailuresTotal.add(failedIds.length);
 
     await this.prisma.outboxEvent.updateMany({
