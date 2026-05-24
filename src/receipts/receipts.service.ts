@@ -106,7 +106,7 @@ export class ReceiptsService {
 
     // If no row updated, it's already Done
     if (claimed.count === 0) {
-      return;
+      return { duplicate: true };
     }
 
     const buffer = await this.generatePdfBuffer(dto);
@@ -114,8 +114,19 @@ export class ReceiptsService {
 
     const objectName = `receipt_${receiptNumber}.pdf`;
 
-    if (!(await this.minio.bucketExists(this.BUCKET_NAME))) {
+    try {
       await this.minio.makeBucket(this.BUCKET_NAME);
+    } catch (err: any) {
+      const isS3Error = err instanceof Minio.S3Error;
+      if (
+        isS3Error &&
+        (err.code === 'BucketAlreadyOwnedByYou' ||
+          err.code === 'BucketAlreadyExists')
+      ) {
+        // Bucket already exists, which is fine
+      } else {
+        throw err;
+      }
     }
 
     await this.minio.putObject(
@@ -155,6 +166,7 @@ export class ReceiptsService {
         status: EventStatus.Done,
       },
     });
+    return { duplicate: false };
   }
 
   private generatePdfBuffer(dto: GenerateReceiptDto): Promise<Buffer> {

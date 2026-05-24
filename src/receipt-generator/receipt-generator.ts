@@ -23,6 +23,18 @@ import {
   trace,
 } from '@opentelemetry/api';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import {
+  jobsProcessedTotal,
+  jobsDlqTotal,
+  jobWaitDurationSeconds,
+  poisonJobsTotal,
+  jobsRetriedTotal,
+  jobsFailedTotal,
+  jobProcessingDurationSeconds,
+  duplicatedJobsPreventedTotal,
+  dbTransactionDurationSeconds,
+  activeDbTransactions,
+} from '../metrics';
 
 @Injectable()
 @Processor(QueueName.Receipts, {
@@ -42,9 +54,23 @@ export class ReceiptGenerator extends WorkerHost {
   }
 
   async process(job: Job<GenerateReceiptJobPayload>): Promise<void> {
+    const start = performance.now();
     const payload = job.data;
+    jobWaitDurationSeconds.record((Date.now() - job.timestamp) / 1000, {
+      queue: QueueName.Receipts,
+    });
 
-    if (!payload.transactionId) return;
+    if (!payload.transactionId) {
+      jobsFailedTotal.add(1, {
+        queue: QueueName.Receipts,
+        reason: 'missing_transaction_id',
+      });
+      poisonJobsTotal.add(1, {
+        queue: QueueName.Receipts,
+        reason: 'missing_transaction_id',
+      });
+      throw new UnrecoverableError('Missing transaction ID');
+    }
     const tracer = trace.getTracer(this.TRACE_NAME);
     const parentCtx = propagation.extract(ROOT_CONTEXT, payload._trace ?? {});
     const parentSpanContext = trace.getSpanContext(parentCtx);
@@ -59,13 +85,33 @@ export class ReceiptGenerator extends WorkerHost {
             where: { id: payload.transactionId },
             include: { ledgerEntries: { orderBy: { amount: 'asc' } } },
           });
+          span.setAttribute('transaction.id', payload.transactionId);
           span.setAttribute('receipt.number', payload.receiptNumber);
           span.setAttribute('receipt.attempts_made', job.attemptsMade);
 
-          if (!transaction) throw new Error('Transaction not found');
+          if (!transaction) {
+            jobsFailedTotal.add(1, {
+              queue: QueueName.Receipts,
+              reason: 'transaction_not_found',
+            });
+            poisonJobsTotal.add(1, {
+              queue: QueueName.Receipts,
+              reason: 'transaction_not_found',
+            });
+            throw new UnrecoverableError('Transaction not found');
+          }
 
-          if (transaction.ledgerEntries.length !== 2)
-            throw new Error('Invalid ledger state');
+          if (transaction.ledgerEntries.length !== 2) {
+            jobsFailedTotal.add(1, {
+              queue: QueueName.Receipts,
+              reason: 'invalid_ledger_entries',
+            });
+            poisonJobsTotal.add(1, {
+              queue: QueueName.Receipts,
+              reason: 'invalid_ledger_entries',
+            });
+            throw new UnrecoverableError('Invalid ledger state');
+          }
 
           const [{ accountId: fromAccountId }, { accountId: toAccountId }] =
             transaction.ledgerEntries;
@@ -78,13 +124,23 @@ export class ReceiptGenerator extends WorkerHost {
                 jobId: job.id,
                 attempts: job.attemptsMade,
               });
-              await this.receiptsService.generateReceipt({
+              const { duplicate } = await this.receiptsService.generateReceipt({
                 amount,
                 timestamp: new Date(),
                 fromAccountId,
                 toAccountId,
                 receiptNumber: job.data.receiptNumber,
               });
+              if (duplicate) {
+                jobsProcessedTotal.add(1, {
+                  status: 'success',
+                  queue: QueueName.Receipts,
+                });
+                duplicatedJobsPreventedTotal.add(1, {
+                  queue: QueueName.Receipts,
+                });
+                return;
+              }
               this.logger.log('receipt.pdf.generated', {
                 component: 'receipt',
                 jobId: job.id,
@@ -100,8 +156,12 @@ export class ReceiptGenerator extends WorkerHost {
           });
 
           await tracer.startActiveSpan('outbox.email.create', async (span) => {
+            const start = performance.now();
             try {
               await this.prisma.$transaction(async (tx) => {
+                activeDbTransactions.add(1, {
+                  operation: 'create_outbox_email',
+                });
                 const { id: receiptId } = await tx.receipt.findUniqueOrThrow({
                   where: { number: job.data.receiptNumber },
                   select: { id: true },
@@ -170,14 +230,40 @@ export class ReceiptGenerator extends WorkerHost {
               span.setStatus({ code: SpanStatusCode.ERROR });
               throw error;
             } finally {
+              activeDbTransactions.add(-1, {
+                operation: 'create_outbox_email',
+              });
+              dbTransactionDurationSeconds.record(
+                (performance.now() - start) / 1000,
+                {
+                  operation: 'create_outbox_email',
+                },
+              );
               span.end();
             }
           });
+
+          jobsProcessedTotal.add(1, {
+            queue: QueueName.Receipts,
+            status: 'success',
+          });
         } catch (error) {
+          jobsProcessedTotal.add(1, {
+            queue: QueueName.Receipts,
+            status: 'failed',
+          });
           span.recordException(error);
           span.setStatus({ code: SpanStatusCode.ERROR });
           throw error;
         } finally {
+          if (job.attemptsMade > 0)
+            jobsRetriedTotal.add(1, { queue: QueueName.Receipts });
+          jobProcessingDurationSeconds.record(
+            (performance.now() - start) / 1000,
+            {
+              queue: QueueName.Receipts,
+            },
+          );
           span.end();
         }
       },
@@ -212,6 +298,13 @@ export class ReceiptGenerator extends WorkerHost {
               attempts: job.attemptsMade,
               error: error.stack,
             });
+            jobsDlqTotal.add(1, {
+              queue: DLQName.ReceiptsDLQ,
+              reason:
+                error instanceof UnrecoverableError
+                  ? 'unrecoverable'
+                  : 'max_attempts_reached',
+            });
           } catch (error) {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
@@ -220,6 +313,10 @@ export class ReceiptGenerator extends WorkerHost {
               id: job.id,
               attempts: job.attemptsMade,
               error: error.stack,
+            });
+            jobsFailedTotal.add(1, {
+              queue: QueueName.Receipts,
+              reason: 'dlq_enqueue_failed',
             });
           } finally {
             span.end();

@@ -25,6 +25,20 @@ import {
   trace,
   SpanStatusCode,
 } from '@opentelemetry/api';
+import {
+  duplicateTransferPreventedTotal,
+  transferDurationSeconds,
+  transferFailuresTotal,
+  transferRequestsTotal,
+  moneyTransferredTotal,
+  completedTransfersTotal,
+  transferAmountHistogram,
+  ledgerEntriesCreatedTotal,
+  ledgerQueryDurationSeconds,
+  activeDbTransactions,
+  dbTransactionDurationSeconds,
+  outboxEventsCreatedTotal,
+} from '../metrics';
 
 @Injectable()
 export class TransactionsService {
@@ -41,6 +55,8 @@ export class TransactionsService {
     idempotencyKey: string,
     fromAccountId: string,
   ) {
+    transferRequestsTotal.add(1);
+    const start = performance.now();
     const tracer = trace.getTracer(this.TRACER_NAME);
 
     return await tracer.startActiveSpan('money.transfer', async (span) => {
@@ -57,15 +73,24 @@ export class TransactionsService {
           idempotencyKey,
           requestHash,
         );
+
         if (existingResponseBody) return existingResponseBody;
 
-        const responseBody = await this.createTransaction(fromAccountId, dto);
+        const responseBody = await this.createTransaction(
+          fromAccountId,
+          dto,
+          new Date(start),
+        );
 
         await this.finalize(responseBody, fromAccountId, dto, idempotencyKey);
 
         if (responseBody.statusCode !== HttpStatus.CREATED) {
           throw new HttpException(responseBody, responseBody.statusCode);
         }
+
+        moneyTransferredTotal.add(dto.amount);
+        completedTransfersTotal.add(1);
+        transferAmountHistogram.record(dto.amount);
 
         return responseBody;
       } catch (error: any) {
@@ -75,6 +100,7 @@ export class TransactionsService {
         }
         throw error;
       } finally {
+        transferDurationSeconds.record((performance.now() - start) / 1000);
         span.end();
       }
     });
@@ -106,6 +132,7 @@ export class TransactionsService {
         if (!isUniqueViolation(error)) {
           span.recordException(error);
           span.setStatus({ code: SpanStatusCode.ERROR });
+          transferFailuresTotal.add(1, { reason: 'unknown_error' });
           throw error;
         }
 
@@ -116,10 +143,12 @@ export class TransactionsService {
         });
 
         if (!existing) {
+          transferFailuresTotal.add(1, { reason: 'race_condition' });
           throw new ConflictException('Race condition detected');
         }
 
         if (existing.requestHash !== requestHash) {
+          transferFailuresTotal.add(1, { reason: 'malformed_request' });
           throw new BadRequestException(
             'Idempotency key reused with different payload',
           );
@@ -127,15 +156,18 @@ export class TransactionsService {
 
         if (existing.status === IdempotencyStatus.Completed) {
           if (existing.responseCode !== HttpStatus.CREATED) {
+            transferFailuresTotal.add(1, { reason: 'existing_error_response' });
             throw new HttpException(
               existing.responseBody as object,
               existing.responseCode!,
             );
           }
 
+          duplicateTransferPreventedTotal.add(1);
           return existing.responseBody;
         }
 
+        transferFailuresTotal.add(1, { reason: 'already_processing' });
         throw new ConflictException('Request is still processing');
       } finally {
         span.end();
@@ -150,6 +182,7 @@ export class TransactionsService {
   private async createTransaction(
     fromAccountId: string,
     dto: CreateTransactionDto,
+    initiatedAt: Date,
   ) {
     const tracer = trace.getTracer(this.TRACER_NAME);
 
@@ -166,22 +199,29 @@ export class TransactionsService {
           attempt <= this.MAX_SERIALIZATION_RETRIES;
           attempt++
         ) {
+          const start = performance.now();
           try {
             responseBody = await this.prisma.$transaction(
               async (tx) => {
+                activeDbTransactions.add(1, { operation: 'create_transfer' });
                 const fromBalance = await this.computeBalance(
                   fromAccountId,
                   tx,
                 );
 
-                if (dto.toAccountId === fromAccountId)
+                if (dto.toAccountId === fromAccountId) {
+                  transferFailuresTotal.add(1, { reason: 'same_account' });
                   return {
                     statusCode: HttpStatus.BAD_REQUEST,
                     error:
                       'Source account and destination account must be different',
                   };
+                }
 
                 if (dto.amount > fromBalance) {
+                  transferFailuresTotal.add(1, {
+                    reason: 'insufficient_balance',
+                  });
                   return {
                     statusCode: HttpStatus.BAD_REQUEST,
                     error: 'Insufficient balance',
@@ -198,6 +238,7 @@ export class TransactionsService {
                   dto,
                   fromBalance,
                   toBalance,
+                  initiatedAt,
                 );
 
                 const { number } = await tx.receipt.create({
@@ -255,13 +296,29 @@ export class TransactionsService {
                 isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
               },
             );
-
+            dbTransactionDurationSeconds.record(
+              (performance.now() - start) / 1000,
+              {
+                operation: 'create_transfer',
+                attempt,
+                status: 'success',
+              },
+            );
             return responseBody;
           } catch (error: any) {
+            dbTransactionDurationSeconds.record(
+              (performance.now() - start) / 1000,
+              {
+                operation: 'create_transfer',
+                attempt,
+                status: 'failed',
+              },
+            );
             if (
               isSerializationFailure(error) &&
               attempt < this.MAX_SERIALIZATION_RETRIES
             ) {
+              transferFailuresTotal.add(1, { reason: 'serialization_failure' });
               continue;
             }
 
@@ -273,6 +330,7 @@ export class TransactionsService {
             }
 
             if (isForeignKeyViolation(error)) {
+              transferFailuresTotal.add(1, { reason: 'account_not_found' });
               return {
                 statusCode: HttpStatus.NOT_FOUND,
                 error: "Destination account doesn't exist",
@@ -282,6 +340,7 @@ export class TransactionsService {
             span.recordException(error);
             span.setStatus({ code: SpanStatusCode.ERROR });
 
+            transferFailuresTotal.add(1, { reason: 'unknown_error' });
             return {
               statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
               error: 'Internal error while processing transaction',
@@ -291,6 +350,7 @@ export class TransactionsService {
 
         return responseBody!;
       } finally {
+        activeDbTransactions.add(-1, { operation: 'create_transfer' });
         span.end();
       }
     });
@@ -309,8 +369,10 @@ export class TransactionsService {
     const tracer = trace.getTracer(this.TRACER_NAME);
 
     return tracer.startActiveSpan('transaction.finalize', async (span) => {
+      const start = performance.now();
       try {
         await this.prisma.$transaction(async (tx) => {
+          activeDbTransactions.add(1, { operation: 'finalize_transfer' });
           if (responseBody.statusCode !== HttpStatus.CREATED) {
             const carrier: Record<string, string> = {};
             propagation.inject(context.active(), carrier);
@@ -358,12 +420,21 @@ export class TransactionsService {
             tx,
           );
         });
+        dbTransactionDurationSeconds.record(
+          (performance.now() - start) / 1000,
+          { operation: 'finalize_transfer', status: 'success' },
+        );
       } catch (error) {
+        dbTransactionDurationSeconds.record(
+          (performance.now() - start) / 1000,
+          { operation: 'finalize_transfer', status: 'failed' },
+        );
         span.recordException(error);
         span.setStatus({ code: SpanStatusCode.ERROR });
         throw error;
       } finally {
         span.end();
+        activeDbTransactions.add(-1, { operation: 'finalize_transfer' });
       }
     });
   }
@@ -378,10 +449,12 @@ export class TransactionsService {
     dto: CreateTransactionDto,
     fromBalance: number,
     toBalance: number,
+    initiatedAt: Date,
   ) {
-    return tx.transaction.create({
+    const transaction = await tx.transaction.create({
       data: {
         id: generateId('txn'),
+        initiatedAt,
         ledgerEntries: {
           createMany: {
             data: [
@@ -400,9 +473,12 @@ export class TransactionsService {
         },
       },
     });
+    ledgerEntriesCreatedTotal.add(2);
+    return transaction;
   }
 
   async computeBalance(accountId: string, tx?: Prisma.TransactionClient) {
+    const start = performance.now();
     const mostRecentEntry = await (tx ?? this.prisma).ledgerEntry.findFirst({
       where: { accountId },
       orderBy: { id: 'desc' },
@@ -420,6 +496,7 @@ export class TransactionsService {
       where: { accountId },
     });
 
+    ledgerQueryDurationSeconds.record((performance.now() - start) / 1000);
     return Number(amount ?? 0) + BASE_ACCOUNT_AMOUNT;
   }
 
@@ -446,6 +523,7 @@ export class TransactionsService {
   ) {
     const client = tx ?? this.prisma;
     await client.outboxEvent.createMany({ data: jobs });
+    outboxEventsCreatedTotal.add(jobs.length);
     await client.$executeRawUnsafe(`NOTIFY outbox_channel`);
   }
 

@@ -1,196 +1,628 @@
 # Banking System
 
-## Overview
-This is a **backend-only simulation** of a banking system that enables two accounts to send and receive money.
+A backend-focused banking system simulation designed to explore transactional integrity, asynchronous workflows, reliability patterns, and observability in distributed backend systems.
 
-The purpose of building the system is to learn:
-- Transactional outbox pattern
-- Job retries and DLQs
-- Ledger entries to derive account balance
-- Idempotency
-- Database transaction isolation level
-- Observability and structured logging
-- Reverse proxy
-- Encryption
-- Rate limiting (simple fixed window algorithm)
+The project intentionally prioritizes backend engineering concepts over product completeness. It explores patterns commonly used in financial and event-driven systems such as transactional outbox, idempotent transaction processing, ledger-based accounting, retries with DLQs, and distributed tracing.
 
-What's not included (for now):
-* Frontend
-* Secure auth
-* Clean code
-* High-coverage testing
-* HTTPS and DNS configurations
-* Advanced rate limiting strategies
+---
 
-## Requirements
+# Motivation
 
-### Functional Requirements
+This project was built to gain hands-on experience with:
 
-- FR-01: Register an account (email, password)
-- FR-02: Sign in to an existing account (email, password)
-- FR-03: Transfer money to another account
-- FR-04: View the account balance
-- FR-05: Both the sender and receiver must receive an email after the transaction.
-- FR-06: The email should include a **transfer receipt (PDF)** as an attachment
-- FR-07: Manage Webhook Endpoints
-    - Create a webhook endpoint (URL)
-    - Generate/store secret
-    - Enable/disable endpoint
-    - Select subscribed events (`transfer.completed`, `transfer.failed`, `receipt.generated`)
-    - Delete endpoint
-- FR-08: All active registered endpoints associated with the sender and receiver must receive webhook requests after the transaction
+* Transactional outbox pattern
+* Idempotent transaction processing
+* Ledger-based accounting systems
+* Background job processing
+* Retries and dead-letter queues (DLQs)
+* Database transaction isolation and row locking
+* Async workflow orchestration
+* Observability and distributed tracing
+* Secure webhook delivery
+* Encryption at rest
+* Reverse proxies and containerized infrastructure
 
-### Non-Functional Requirements
+The architecture intentionally explores production-inspired backend reliability patterns rather than optimizing for MVP simplicity.
 
-#### Observability
-- NFR-01: Every request should have tracing info
-- NFR-02: Every HTTP requests and important worker events (success, fail, retry) must be logged
+---
 
-#### Security
-- NFR-04: Sending webhook events must include a secure signature in the request header and event ID for idempotency checks
-- NFR-06: Transaction API endpoint should be rate-limited per IP and account (authenticated endpoints) to prevent abuse
-- NFR-10: Receipts and webhook secrets must be encrypted at rest
+# Features
 
-#### Performance
-- NFR-05: Transactions should happen under 1 second (background jobs for non-customer-facing tasks)
+## Functional Requirements
 
-#### Data Integrity
-- NFR-03: The balance must never be negative despite multiple concurrent transactions.
-- NFR-07: The balance must be derived from the ledger table, not a single value.
-- NFR-08: Transactions must be idempotent, and don’t charge twice
+* Register an account
+* Authenticate with JWT-based login
+* Transfer money between accounts
+* View account balances
+* Generate PDF transfer receipts
+* Send email notifications after transfers
+* Register and manage webhook endpoints
+* Deliver signed webhook events asynchronously
 
-#### Robustness
-- NFR-09: Repeatedly failed jobs must be sent to DLQ
+## Non-Functional Requirements
 
-## Tech Stack
+### Data Integrity
 
-### Framework
-**NodeJS** and **NestJS** to build the backend due to clean and standardized OO architectural patterns. They are used to build both the API and the workers
+* Account balances are derived from immutable ledger entries
+* Concurrent transfers must never produce negative balances
+* Transfers are idempotent and safe against duplicate requests
+* Critical balance operations execute inside database transactions
 
-### Authentication strategy
-**JWT** for simple authentication with very short-lived access tokens (30 minutes) and no refresh token for now to mitigate account impersonation
+### Performance
 
-### Databases
+* User-facing transfer requests should complete under 1 second
+* Non-critical workflows are offloaded asynchronously
 
-- **PostgreSQL** for the primary database due to its ACID property, isolation level, row-locking feature that are essential for data integrity in the payment system
-- **Redis** with **BullMQ** for job queue because it fits NodeJS harmoniously with minimal setup compared to RabbitMQ while minimizing job loss with RDB + AOF. Also, **Redis** is used as a storage for rate limiting.
+### Reliability
+
+* Failed jobs are retried with backoff
+* Repeatedly failing jobs are moved into DLQs
+* Outbox pattern prevents event loss between DB writes and queue publishing
+
+### Security
+
+* Webhook deliveries include signed payloads
+* Webhook events include event IDs for idempotency checks
+* Receipts and webhook secrets are encrypted at rest
+* Transaction endpoints are rate limited
 
 ### Observability
-- **Prometheus** for analytics tracking and real-time monitoring
-- **OpenTelemetry (OTel)** for observability, tracing and metrics collection
-- **Grafana** dashboard for analysis and visualization based on the data gathered from Prometheus and OpenTelemetry
-- **Loki** for log collection with Winston (although it can integrate with OTel, the library isn't that mature)
-- **Jaeger** for trace visualization (in-memory storage for now, feel free to add storage like Elasticsearch)
-- **Mailpit** for sending and receiving emails locally
 
-### File Storage
-**MinIO** for S3-like storage
+* Every request includes distributed tracing metadata
+* Important events are logged with structured logging
+* Metrics and traces are exported for monitoring and analysis
 
-### Containerization
-**Docker**
+---
 
-## Architecture
+# Key Engineering Decisions
 
-![System Architecture](./architecture.png)
+## Ledger-Based Accounting
 
-The system architecture consists of these main components:
-- A reverse proxy (nginx) to receive requests from the clients and forward them to the APIs through different load balancing methods.
-- An API gateway to receive requests.
-- Outbox workers to ensure jobs are both stored in the database and enqueued atomically. Once ledger entries are successfully stored in the database, outbox events are also stored in the database within the same database transaction. These outbox workers run in separate processes to poll these outbox events from the database and enqueue them in Redis.
-- 3 types of workers: webhook senders, sending emails and generating PDF receipts. Each of which can be scaled based on actual demands. They consume jobs enqueued by outbox workers, retry failed jobs and store them in DLQs if they repeatedly failed.
-- Observability infra: OTel collector receives, processes and exports traces to Jager for visualization, and metrics to Prometheus.
-- Loki directly connects to NestJS Winston to collect logs, which are then exported to Grafana for queries and visualization.
+Balances are not stored as mutable values. Instead, balances are derived from immutable ledger entries.
 
-## Setup & Installation
-### Prerequisites
-* Node.js 22 or higher (not needed for production use)
+This design improves:
+
+* auditability
+* consistency
+* transaction traceability
+* corruption resistance
+
+It also mirrors how many real financial systems model account state.
+
+---
+
+## Transactional Outbox Pattern
+
+Transfer-related events are written into an outbox table within the same database transaction as ledger updates.
+
+An outbox worker later polls unpublished events and publishes jobs into Redis queues.
+
+This prevents situations where:
+
+* database writes succeed
+* but async jobs fail to enqueue
+
+which could otherwise produce inconsistent side effects.
+
+---
+
+## Async Processing
+
+Customer-facing transaction APIs only handle balance-critical operations synchronously.
+
+Non-user-facing workflows are processed asynchronously:
+
+* email delivery
+* webhook delivery
+* receipt generation
+
+This keeps request latency predictable while isolating slower external operations.
+
+---
+
+## PostgreSQL for Strong Consistency
+
+PostgreSQL was chosen because transactional guarantees are critical for financial operations.
+
+The system uses:
+
+* ACID transactions
+* row-level locking
+* transaction isolation
+* atomic writes
+
+to protect against race conditions and invalid balances during concurrent transfers.
+
+---
+
+## Redis + BullMQ
+
+Redis with BullMQ was selected for:
+
+* lightweight operational setup
+* good NodeJS ecosystem integration
+* retry support
+* delayed jobs
+* DLQ workflows
+
+The project intentionally avoids introducing heavier infrastructure such as Kafka or RabbitMQ since the learning focus is reliability patterns rather than high-throughput distributed streaming.
+
+---
+
+# Tech Stack
+
+## Backend
+
+* NodeJS
+* NestJS
+
+## Databases
+
+* PostgreSQL
+* Redis
+* BullMQ
+
+## Storage
+
+* MinIO (S3-compatible object storage)
+
+## Observability
+
+* OpenTelemetry
+* Prometheus
+* Grafana
+* Loki
+* Jaeger
+
+## Infrastructure
+
 * Docker
+* NGINX
 
-Clone the repo:
+---
+
+# Architecture
+
+## High-Level System Architecture
+
+```mermaid
+flowchart LR
+    %% Clients
+    U[👥 Users]
+
+    %% Edge
+    NGINX["🟩 NGINX<br/>Reverse Proxy"]
+
+    %% API Layer
+    API["🟥 NestJS API"]
+
+    %% Core Infra
+    PG[(🐘 PostgreSQL)]
+    REDIS[(🟥 Redis / BullMQ)]
+    S3[(🟩 MinIO / S3)]
+
+    %% Workers
+    OUTBOX["🟥 Outbox Worker"]
+    MAIL["📧 Email Worker"]
+    WEBHOOK["🔔 Webhook Worker"]
+    RECEIPT["🧾 Receipt Worker"]
+
+    %% External
+    EMAIL["✉️ Mail Provider"]
+
+    %% Observability
+    OTEL["📡 OpenTelemetry"]
+    PROM["🔥 Prometheus"]
+    GRAF["📊 Grafana"]
+    LOKI["🪵 Loki"]
+    JAEGER["🕸️ Jaeger"]
+
+    %% Flow
+    U --> NGINX --> API
+
+    API --> PG
+    API --> REDIS
+
+    OUTBOX --> PG
+    OUTBOX --> REDIS
+
+    REDIS --> MAIL
+    REDIS --> WEBHOOK
+    REDIS --> RECEIPT
+
+    RECEIPT --> S3
+    MAIL --> S3
+
+    MAIL --> EMAIL
+
+    API -. telemetry .-> OTEL
+    MAIL -. telemetry .-> OTEL
+    WEBHOOK -. telemetry .-> OTEL
+    RECEIPT -. telemetry .-> OTEL
+
+    OTEL --> PROM
+    OTEL --> JAEGER
+
+    API -. logs .-> LOKI
+    MAIL -. logs .-> LOKI
+    WEBHOOK -. logs .-> LOKI
+    RECEIPT -. logs .-> LOKI
+
+    PROM --> GRAF
+    LOKI --> GRAF
+
+    %% Styling
+    classDef api fill:#ffdddd,stroke:#cc0000,color:#000;
+    classDef infra fill:#ddeeff,stroke:#0066cc,color:#000;
+    classDef worker fill:#fff0cc,stroke:#cc8800,color:#000;
+    classDef obs fill:#eee0ff,stroke:#7a3db8,color:#000;
+    classDef storage fill:#ddffdd,stroke:#228822,color:#000;
+
+    class API,OUTBOX,MAIL,WEBHOOK,RECEIPT api;
+    class PG,REDIS,S3 storage;
+    class OTEL,PROM,GRAF,LOKI,JAEGER obs;
+    class NGINX infra;
+```
+
+---
+
+## Transfer Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    actor User
+    participant API as NestJS API
+    participant DB as PostgreSQL
+    participant OUTBOX as Outbox Table
+    participant WORKER as Outbox Worker
+    participant QUEUE as Redis Queue
+    participant EMAIL as Email Worker
+    participant RECEIPT as Receipt Worker
+    participant WEBHOOK as Webhook Worker
+    participant S3 as MinIO/S3
+
+    User->>API: POST /transfers
+
+    API->>DB: Begin transaction
+
+    API->>DB: Lock sender account row
+    API->>DB: Validate balance
+
+    API->>DB: Insert ledger entries
+    API->>DB: Insert transfer record
+
+    API->>OUTBOX: Insert outbox events
+
+    API->>DB: Commit transaction
+
+    API-->>User: 200 OK
+
+    WORKER->>OUTBOX: Poll unpublished events
+    WORKER->>QUEUE: Enqueue jobs
+
+    QUEUE->>RECEIPT: receipt.generate
+    RECEIPT->>S3: Upload PDF receipt
+
+    QUEUE->>EMAIL: transfer.completed
+    EMAIL->>S3: Fetch receipt
+    EMAIL-->>User: Send email
+
+    QUEUE->>WEBHOOK: transfer.completed
+    WEBHOOK-->>User: Send webhook
+```
+
+---
+
+## Retry + DLQ Flow
+
+```mermaid
+flowchart TD
+
+    JOB["📦 Queue Job"]
+    WORKER["🟥 Worker"]
+
+    SUCCESS["✅ Success"]
+    RETRY["🔁 Retry with Backoff"]
+    DLQ["💀 Dead Letter Queue"]
+
+    ALERT["🚨 Monitoring / Alerting"]
+
+    JOB --> WORKER
+
+    WORKER -->|Success| SUCCESS
+
+    WORKER -->|Failure| RETRY
+
+    RETRY -->|Retry limit exceeded| DLQ
+    RETRY -->|Retry again| WORKER
+
+    DLQ --> ALERT
+
+    classDef success fill:#ddffdd,stroke:#228822,color:#000;
+    classDef fail fill:#ffdddd,stroke:#cc0000,color:#000;
+    classDef process fill:#ddeeff,stroke:#0066cc,color:#000;
+
+    class SUCCESS success;
+    class RETRY,DLQ fail;
+    class JOB,WORKER,ALERT process;
+```
+
+---
+
+## Observability Flow
+
+```mermaid
+flowchart LR
+
+    API["🟥 API"]
+    WORKERS["🟥 Workers"]
+
+    OTEL["📡 OpenTelemetry"]
+    LOKI["🪵 Loki"]
+
+    PROM["🔥 Prometheus"]
+    JAEGER["🕸️ Jaeger"]
+    GRAF["📊 Grafana"]
+
+    API -. traces .-> OTEL
+    WORKERS -. traces .-> OTEL
+
+    API -. logs .-> LOKI
+    WORKERS -. logs .-> LOKI
+
+    OTEL --> PROM
+    OTEL --> JAEGER
+
+    PROM --> GRAF
+    LOKI --> GRAF
+
+    classDef app fill:#ffdddd,stroke:#cc0000,color:#000;
+    classDef obs fill:#eee0ff,stroke:#7a3db8,color:#000;
+
+    class API,WORKERS app;
+    class OTEL,LOKI,PROM,JAEGER,GRAF obs;
+```
+
+---
+
+# Request Lifecycle
+
+A typical money transfer follows this flow:
+
+1. Client sends transfer request
+2. API validates authentication and rate limits
+3. Database transaction begins
+4. Sender account row is locked
+5. Ledger entries are inserted
+6. Transfer record is created
+7. Outbox events are inserted atomically
+8. Database transaction commits
+9. Outbox worker publishes async jobs
+10. Workers process:
+
+    * email delivery
+    * webhook delivery
+    * receipt generation
+
+This architecture separates:
+
+* balance-critical synchronous operations
+  from:
+* non-critical eventual-consistency workflows
+
+---
+
+# Reliability Considerations
+
+## Idempotency
+
+Transfers support idempotency keys to prevent accidental double charges caused by retries or duplicate client submissions.
+
+---
+
+## Retries and DLQs
+
+Workers retry failed jobs with backoff strategies.
+
+Jobs exceeding retry limits are moved into dead-letter queues for inspection and replay.
+
+---
+
+## Failure Isolation
+
+External integrations such as:
+
+* email providers
+* webhook targets
+* PDF generation
+
+are isolated behind async workers to prevent them from affecting transaction latency.
+
+---
+
+# Security Considerations
+
+The project includes several backend-focused security mechanisms:
+
+* Signed webhook payloads
+* Encrypted webhook secrets
+* Encrypted receipt storage
+* JWT authentication
+* Rate limiting
+* Request tracing
+* Structured audit logging
+
+This is not intended to be a production-ready banking platform. The project focuses primarily on backend systems learning and reliability exploration.
+
+---
+
+# Observability
+
+The project includes a full observability pipeline:
+
+* OpenTelemetry for tracing and metrics
+* Prometheus for metrics aggregation
+* Grafana dashboards
+* Loki log aggregation
+* Jaeger trace visualization
+
+This allows inspection of:
+
+* request latency
+* worker retries
+* queue throughput
+* transfer traces
+* error rates
+
+---
+
+# Future Improvements
+
+Potential future explorations include:
+
+* Refresh token rotation
+* More advanced rate limiting algorithms
+* Chaos testing
+* Horizontal scaling experiments
+* Queue partitioning strategies
+* Exactly-once event processing exploration
+* Multi-region deployment experiments
+* Webhook replay tooling
+* Improved test coverage
+* HTTPS + DNS configuration
+* CI/CD pipelines
+
+---
+
+# Setup
+
+## Prerequisites
+
+* Docker
+* NodeJS 22+ (development only)
+
+Clone the repository:
+
 ```bash
 git clone https://github.com/alphatrann/banking-system.git
 ```
 
-### Production
+---
 
-Copy `.env.example` to `.env.production.local`
+# Production
+
+Copy environment variables:
+
 ```bash
 cp .env.example .env.production.local
 ```
 
-Then modify the environment variables in the copied file based on your needs.
+Start production services:
 
-Start Docker compose stack for production (remember to start Docker Desktop first):
 ```bash
 docker compose -f compose.prod.yml up -d
 ```
 
-The API is available at [localhost](http://localhost). Feel free to practice deploying to a VPS and config HTTPS and domain names.
+API:
 
-### Development
-Install yarn if you haven't
-```bash
-npm i -g yarn@latest
+```txt
+http://localhost
 ```
 
-Install all the dependencies
+---
+
+# Development
+
+Install dependencies:
+
 ```bash
 yarn
 ```
 
-Copy `.env.example` to `.env.development.local`
+Copy environment variables:
+
 ```bash
 cp .env.example .env.development.local
 ```
 
-Then modify the environment variables in the copied file based on your needs.
+Start development infrastructure:
 
-Start Docker compose stack for development (remember to start Docker Desktop first):
 ```bash
 docker compose -f compose.dev.yml up -d
 ```
 
-Apply Prisma migrations
+Apply database migrations:
+
 ```bash
 yarn migrate:deploy:dev
 ```
 
-Run each command below **in separate terminals** to start API and workers development servers:
+Run services in separate terminals:
+
 ```bash
-yarn start:dev:api # API
-yarn start:dev:outbox # Outbox worker
-yarn start:dev:mail # Mail sender
-yarn start:dev:receipt # Receipt generator
-yarn start:dev:webhooks # Webhooks sender
+yarn start:dev:api
+yarn start:dev:outbox
+yarn start:dev:mail
+yarn start:dev:receipt
+yarn start:dev:webhooks
 ```
 
-The API is available at [localhost:5000](http://localhost:5000)
+API:
 
+```txt
+http://localhost:5000
+```
 
-There are only 3 e2e tests in the [test/ directory](./test/), run them by:
+---
+
+# Dashboards
+
+## Development
+
+* Swagger UI: `localhost:5000/api`
+* Jaeger UI: `localhost:16686`
+* Mailpit Inbox: `localhost:8025`
+* Grafana: `localhost:3000`
+* MinIO: `localhost:9001`
+
+## Production
+
+* Swagger UI: `localhost/api`
+* Jaeger UI: `jaeger.localhost`
+* Mailpit Inbox: `mail.localhost`
+* Grafana: `grafana.localhost`
+* MinIO: `minio.localhost`
+
+---
+
+# Testing
+
+Run E2E tests:
+
 ```bash
 sh e2e.sh
 ```
 
-You can read all the available scripts in the [package.json file](./package.json).
+---
 
-## Dashboards
-### Development
-* Swagger UI: [localhost:5000/api](http://localhost:5000/api)
-* Jaeger UI: [localhost:16686](http://localhost:16686)
-* Mailpit Inbox: [localhost:8025](http://localhost:8025)
-* Grafana: [localhost:3000](http://localhost:3000)
-* MinIO [localhost:9001](http://localhost:9001): login with the username and password in the `.env.development.local` file
+# Important Notes
 
-### Production
-All the dashboards are configured with `localhost` subdomains:
+This project is a backend systems learning project and not a production-ready financial platform.
 
-* Swagger UI: [localhost/api](http://localhost/api)
-* Jaeger UI: [jaeger.localhost](http://jaeger.localhost)
-* Mailpit Inbox: [mail.localhost](http://mail.localhost)
-* Grafana: [grafana.localhost](http://grafana.localhost)
-* MinIO [minio.localhost](http://minio.localhost): login with the username and password in the `.env.production.local` file
+Some production concerns are intentionally simplified or omitted, including:
 
-## License
+* advanced authentication flows
+* regulatory compliance
+* hardened infrastructure
+* large-scale distributed deployment
+* comprehensive security audits
 
-[MIT](./LICENSE)
+The primary goal is to explore backend reliability and transactional systems design patterns in a realistic but approachable environment.
+
+---
+
+# License
+
+MIT

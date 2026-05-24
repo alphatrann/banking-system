@@ -13,6 +13,12 @@ import {
   trace,
 } from '@opentelemetry/api';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import {
+  jobsAddedTotal,
+  outboxEnqueueFailuresTotal,
+  outboxEventsProcessedTotal,
+  outboxProcessingDelaySeconds,
+} from '../metrics';
 
 @Injectable()
 export class OutboxService {
@@ -28,16 +34,16 @@ export class OutboxService {
   ) {}
 
   async pollOutbox() {
-    const toEnqueueJobs = await this.prisma.$transaction(async (tx) => {
-      const pendingJobs = await tx.$queryRaw<
-        {
-          id: string;
-          event_type: EventType | WebhookEventType;
-          attempt_count: number;
-          payload: object;
-          trace_context: Record<string, string>;
-        }[]
-      >`
+    const toEnqueueJobs = await this.prisma.$queryRaw<
+      {
+        id: string;
+        event_type: EventType | WebhookEventType;
+        created_at: Date;
+        attempt_count: number;
+        payload: object;
+        trace_context: Record<string, string>;
+      }[]
+    >`
         UPDATE outbox_events
         SET status = 'Processing',
             attempt_count = attempt_count + 1,
@@ -51,11 +57,8 @@ export class OutboxService {
           FOR UPDATE SKIP LOCKED
           LIMIT 50
         )
-        RETURNING id, event_type, payload, attempt_count, trace_context;
+        RETURNING id, event_type, payload, created_at, attempt_count, trace_context;
     `;
-
-      return pendingJobs;
-    });
 
     if (toEnqueueJobs.length === 0) return;
     const enqueues = toEnqueueJobs.map(async (job) => {
@@ -63,10 +66,14 @@ export class OutboxService {
       const parentCtx = propagation.extract(ROOT_CONTEXT, job.trace_context);
       const parentSpanContext = trace.getSpanContext(parentCtx);
       const startMs = Date.now();
-      await tracer.startActiveSpan(
+      return tracer.startActiveSpan(
         'outbox.process',
         { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
         async (span) => {
+          span.setAttribute('outbox.event_id', job.id);
+          span.setAttribute('outbox.event_type', job.event_type);
+          span.setAttribute('outbox.attempts_made', job.attempt_count);
+
           this.logger.log('outbox.dispatch', {
             component: 'outbox',
             jobId: job.id,
@@ -108,6 +115,9 @@ export class OutboxService {
                 break;
             }
             span.setStatus({ code: SpanStatusCode.OK });
+            outboxProcessingDelaySeconds.record(
+              (Date.now() - job.created_at.getTime()) / 1000,
+            );
             this.logger.log('outbox.enqueue.success', {
               component: 'outbox',
               jobId: job.id,
@@ -144,6 +154,7 @@ export class OutboxService {
     });
 
     const results = await Promise.allSettled(enqueues);
+    outboxEventsProcessedTotal.add(results.length);
     const successIds = toEnqueueJobs
       .filter((_, i) => results[i].status === 'fulfilled')
       .map((job) => job.id);
@@ -154,6 +165,9 @@ export class OutboxService {
           results[i].status === 'rejected',
       )
       .map((job) => job.id);
+
+    jobsAddedTotal.add(successIds.length);
+    outboxEnqueueFailuresTotal.add(failedIds.length);
 
     await this.prisma.outboxEvent.updateMany({
       where: { id: { in: successIds } },

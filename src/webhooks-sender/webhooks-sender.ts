@@ -27,6 +27,17 @@ import {
   trace,
 } from '@opentelemetry/api';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import {
+  duplicatedJobsPreventedTotal,
+  jobProcessingDurationSeconds,
+  jobsDlqTotal,
+  jobsFailedTotal,
+  jobsProcessedTotal,
+  jobsRetriedTotal,
+  jobWaitDurationSeconds,
+  poisonJobsTotal,
+  webhookDeliveryTotal,
+} from '../metrics';
 
 const backoffStrategy: BackoffStrategy = (attemptsMade, type, err) => {
   try {
@@ -62,6 +73,10 @@ export class WebhooksSender extends WorkerHost {
   }
 
   async process(job: Job<SendWebhookJobPayload>): Promise<void> {
+    const start = performance.now();
+    jobWaitDurationSeconds.record((Date.now() - job.timestamp) / 1000, {
+      queue: QueueName.Webhooks,
+    });
     const { endpointId, eventId, _trace, ...payload } = job.data;
     const tracer = trace.getTracer(this.TRACE_NAME);
     const parentCtx = propagation.extract(ROOT_CONTEXT, _trace ?? {});
@@ -76,8 +91,17 @@ export class WebhooksSender extends WorkerHost {
         try {
           const webhookEndpoint =
             await this.webhooksService.findOne(endpointId);
-          if (!webhookEndpoint)
+          if (!webhookEndpoint) {
+            jobsFailedTotal.add(1, {
+              queue: QueueName.Webhooks,
+              reason: 'endpoint_not_found',
+            });
+            poisonJobsTotal.add(1, {
+              queue: QueueName.Webhooks,
+              reason: 'endpoint_not_found',
+            });
             throw new UnrecoverableError('Webhook endpoint not found');
+          }
 
           const timestamp = unix();
           const body = { id: eventId, timestamp, ...payload };
@@ -111,7 +135,14 @@ export class WebhooksSender extends WorkerHost {
             payloadStatus: event.status,
             attempts: job.attemptsMade,
           });
-          if (event.status === EventStatus.Done) return;
+          if (event.status === EventStatus.Done) {
+            jobsProcessedTotal.add(1, {
+              queue: QueueName.Webhooks,
+              status: 'success',
+            });
+            duplicatedJobsPreventedTotal.add(1, { queue: QueueName.Webhooks });
+            return;
+          }
 
           await tracer.startActiveSpan('webhooks.http', async (span) => {
             this.logger.log('webhooks.sending', {
@@ -121,18 +152,47 @@ export class WebhooksSender extends WorkerHost {
               webhookUrl: webhookEndpoint.url,
             });
             try {
-              await this.handleRequest(
+              const { statusCode, retryAfter } = await this.handleRequest(
                 webhookEndpoint.url,
                 eventId,
                 timestamp,
                 signature,
                 jsonBody,
               );
-              this.logger.log('webhooks.success', {
-                component: 'webhooks',
-                jobId: job.id,
-                attempts: job.attemptsMade,
-              });
+
+              if (statusCode < HttpStatus.BAD_REQUEST) {
+                await this.prisma.webhookEvent.update({
+                  where: { id: eventId },
+                  data: { status: EventStatus.Done },
+                });
+                this.logger.log('webhooks.success', {
+                  component: 'webhooks',
+                  jobId: job.id,
+                  attempts: job.attemptsMade,
+                  statusCode,
+                });
+
+                webhookDeliveryTotal.add(1, {
+                  queue: QueueName.Webhooks,
+                  event: payload.event,
+                  status: 'success',
+                  code: statusCode,
+                });
+              } else {
+                this.logger.log('webhooks.error', {
+                  component: 'webhooks',
+                  jobId: job.id,
+                  attempts: job.attemptsMade,
+                  statusCode,
+                });
+                webhookDeliveryTotal.add(1, {
+                  queue: QueueName.Webhooks,
+                  event: payload.event,
+                  status: 'error',
+                  code: statusCode,
+                });
+                await this.handleFailure(statusCode, retryAfter);
+              }
             } catch (error: any) {
               if (error instanceof UnrecoverableError) throw error;
               span.setStatus({ code: SpanStatusCode.ERROR });
@@ -143,11 +203,28 @@ export class WebhooksSender extends WorkerHost {
               span.end();
             }
           });
+          jobsProcessedTotal.add(1, {
+            queue: QueueName.Webhooks,
+            status: 'success',
+          });
         } catch (error) {
+          jobsProcessedTotal.add(1, {
+            queue: QueueName.Webhooks,
+            status: 'failed',
+          });
           span.setStatus({ code: SpanStatusCode.ERROR });
           span.recordException(error);
           throw error;
         } finally {
+          if (job.attemptsMade > 0) {
+            jobsRetriedTotal.add(1, { queue: QueueName.Webhooks });
+          }
+          jobProcessingDurationSeconds.record(
+            (performance.now() - start) / 1000,
+            {
+              queue: QueueName.Webhooks,
+            },
+          );
           span.end();
         }
       },
@@ -197,14 +274,7 @@ export class WebhooksSender extends WorkerHost {
       throw error;
     }
 
-    if (statusCode < HttpStatus.BAD_REQUEST) {
-      await this.prisma.webhookEvent.update({
-        where: { id: eventId },
-        data: { status: EventStatus.Done },
-      });
-    } else {
-      await this.handleFailure(statusCode, retryAfter);
-    }
+    return { statusCode, retryAfter };
   }
 
   private async handleFailure(
@@ -223,17 +293,35 @@ export class WebhooksSender extends WorkerHost {
             retryAfterMs = parseInt(retryAfter) * 1000;
           }
         }
+        jobsFailedTotal.add(1, {
+          queue: QueueName.Webhooks,
+          reason: 'rate_limit',
+        });
         throw new Error(
           JSON.stringify({
             type: 'rate_limit',
             delay: retryAfterMs,
           }),
         );
-      } else
+      } else {
+        jobsFailedTotal.add(1, {
+          queue: QueueName.Webhooks,
+          reason: `client_error_${statusCode}`,
+        });
+        poisonJobsTotal.add(1, {
+          queue: QueueName.Webhooks,
+          reason: `client_error_${statusCode}`,
+        });
+
         throw new UnrecoverableError(
           `Client error with status code ${statusCode}`,
         );
+      }
     } else {
+      jobsFailedTotal.add(1, {
+        queue: QueueName.Webhooks,
+        reason: `server_error_${statusCode}`,
+      });
       throw new Error(`Service error with status code ${statusCode}`);
     }
   }
@@ -275,6 +363,13 @@ export class WebhooksSender extends WorkerHost {
               attempts: job.attemptsMade,
               error,
             });
+            jobsDlqTotal.add(1, {
+              queue: QueueName.Webhooks,
+              reason:
+                error instanceof UnrecoverableError
+                  ? 'unrecoverable'
+                  : 'max_attempts_reached',
+            });
           } catch (error) {
             span.setStatus({ code: SpanStatusCode.ERROR });
             span.recordException(error);
@@ -283,6 +378,10 @@ export class WebhooksSender extends WorkerHost {
               jobId: job.id,
               attempts: job.attemptsMade,
               error,
+            });
+            jobsFailedTotal.add(1, {
+              queue: QueueName.Webhooks,
+              reason: 'dlq_enqueue_failed',
             });
             throw error;
           } finally {

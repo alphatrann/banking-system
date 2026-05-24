@@ -33,10 +33,8 @@ class IsSecureWebhookUrlConstraint implements ValidatorConstraintInterface {
     }
 
     // If hostname is an IP address, validate it's not private/internal
-    if (net.isIP(hostname)) {
-      if (this.isPrivateIp(hostname)) {
-        return false;
-      }
+    if (net.isIP(hostname) && this.isPrivateIp(hostname)) {
+      return false;
     }
 
     return true;
