@@ -11,7 +11,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     MailerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: async (config: ConfigService) => ({
+      useFactory: (config: ConfigService) => ({
         transport: config.getOrThrow('MAIL_TRANSPORT'),
         template: {
           dir: join(__dirname, 'templates'),

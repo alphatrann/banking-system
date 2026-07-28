@@ -46,10 +46,20 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_started
-      minio:
-        condition: service_started
     env_file:
       - .env.production.local
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://localhost:5000/health/live', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     networks:
       - app-net
       - data-net
@@ -71,6 +81,18 @@ services:
       - 5000
     env_file:
       - .env.production.local
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://localhost:5000/health/live', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     networks:
       - app-net
       - data-net
@@ -92,6 +114,18 @@ services:
       - 5000
     env_file:
       - .env.production.local
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://localhost:5000/health/live', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     networks:
       - app-net
       - data-net
@@ -249,6 +283,7 @@ services:
     volumes:
       - grafana_data_prod:/var/lib/grafana
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
       - ./grafana/grafana.ini:/etc/grafana/grafana.ini
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: 'true'

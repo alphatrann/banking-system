@@ -24,7 +24,7 @@ export class ReceiptsService {
     const keyVersion = +this.configService.getOrThrow(
       'WEBHOOK_ENC_ACTIVE_KEY_VERSION',
     );
-    const masterKey = this.configService.getOrThrow(
+    const masterKey = this.configService.getOrThrow<string>(
       `WEBHOOK_ENC_MASTER_KEY_V${keyVersion}`,
     );
     const iv = randomBytes(12);
@@ -49,7 +49,7 @@ export class ReceiptsService {
     authTag: string,
     keyVersion: number,
   ) {
-    const masterKey = this.configService.getOrThrow(
+    const masterKey = this.configService.getOrThrow<string>(
       `WEBHOOK_ENC_MASTER_KEY_V${keyVersion}`,
     );
     const decipher = createDecipheriv(

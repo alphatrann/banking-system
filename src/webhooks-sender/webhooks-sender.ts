@@ -17,7 +17,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { unix } from '../utils/timer';
 import { hmac } from '../utils/hash';
-import { EventStatus } from '@prisma/client';
+import { EventStatus, Prisma } from '@prisma/client';
 import { WEBHOOK_TIMEOUT_MS } from '../constants';
 import { formatError } from '../utils/formatter';
 import {
@@ -41,11 +41,13 @@ import {
 
 const backoffStrategy: BackoffStrategy = (attemptsMade, type, err) => {
   try {
-    const parsed = JSON.parse(err!.message);
-    if (parsed?.delay) {
+    const parsed = JSON.parse(err!.message) as { delay?: number };
+    if (typeof parsed.delay === 'number') {
       return parsed.delay;
     }
-  } catch {}
+  } catch {
+    // expected: error message isn't JSON-encoded backoff info, fall through to default backoff
+  }
 
   const backoff = Math.min(
     2 ** attemptsMade * 1000 * (1 + Math.random()),
@@ -122,7 +124,7 @@ export class WebhooksSender extends WorkerHost {
             create: {
               id: eventId,
               eventType: payload.event,
-              payload: payload as any,
+              payload: payload as unknown as Prisma.InputJsonValue,
               endpointId,
               status: EventStatus.Processing,
             },
@@ -160,7 +162,7 @@ export class WebhooksSender extends WorkerHost {
                 jsonBody,
               );
 
-              if (statusCode < HttpStatus.BAD_REQUEST) {
+              if (statusCode < (HttpStatus.BAD_REQUEST as number)) {
                 await this.prisma.webhookEvent.update({
                   where: { id: eventId },
                   data: { status: EventStatus.Done },
@@ -191,7 +193,7 @@ export class WebhooksSender extends WorkerHost {
                   status: 'error',
                   code: statusCode,
                 });
-                await this.handleFailure(statusCode, retryAfter);
+                this.handleFailure(statusCode, retryAfter);
               }
             } catch (error: any) {
               if (error instanceof UnrecoverableError) throw error;
@@ -252,23 +254,25 @@ export class WebhooksSender extends WorkerHost {
         body: jsonBody,
         signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       });
-      const body = await response.json();
+      const body = (await response.json()) as unknown;
       statusCode = response.status;
       await this.prisma.webhookAttempt.create({
         data: {
           durationMs: Date.now() - requestSentAtMs,
-          responseBody: body,
+          responseBody: body as Prisma.InputJsonValue,
           responseStatus: response.status,
           webhookEventId: eventId,
         },
       });
       retryAfter = response.headers.get('retry-after');
-    } catch (error) {
+    } catch (error: unknown) {
+      const normalizedError =
+        error instanceof Error ? error : new Error(String(error));
       await this.prisma.webhookAttempt.create({
         data: {
           durationMs: Date.now() - requestSentAtMs,
           webhookEventId: eventId,
-          error: formatError(error),
+          error: formatError(normalizedError),
         },
       });
       throw error;
@@ -277,10 +281,7 @@ export class WebhooksSender extends WorkerHost {
     return { statusCode, retryAfter };
   }
 
-  private async handleFailure(
-    statusCode: HttpStatus,
-    retryAfter: string | null,
-  ) {
+  private handleFailure(statusCode: HttpStatus, retryAfter: string | null) {
     if (statusCode < HttpStatus.BAD_REQUEST) return;
     if (statusCode < HttpStatus.INTERNAL_SERVER_ERROR) {
       if (statusCode === HttpStatus.TOO_MANY_REQUESTS) {
@@ -347,7 +348,7 @@ export class WebhooksSender extends WorkerHost {
               create: {
                 id: eventId,
                 eventType: payload.event,
-                payload: payload as any,
+                payload: payload as unknown as Prisma.InputJsonValue,
                 endpointId: payload.endpointId,
                 status: EventStatus.Failed,
               },
@@ -370,9 +371,9 @@ export class WebhooksSender extends WorkerHost {
                   ? 'unrecoverable'
                   : 'max_attempts_reached',
             });
-          } catch (error) {
+          } catch (error: unknown) {
             span.setStatus({ code: SpanStatusCode.ERROR });
-            span.recordException(error);
+            span.recordException(error as Error);
             this.logger.error('webhooks.dlq.failed', {
               component: 'webhooks',
               jobId: job.id,
@@ -400,7 +401,7 @@ export class WebhooksSender extends WorkerHost {
               create: {
                 id: eventId,
                 eventType: payload.event,
-                payload: payload as any,
+                payload: payload as unknown as Prisma.InputJsonValue,
                 endpointId: payload.endpointId,
                 status: EventStatus.Processing,
               },
@@ -413,9 +414,9 @@ export class WebhooksSender extends WorkerHost {
               retryAfterMs: job.delay,
               error,
             });
-          } catch (error) {
+          } catch (error: unknown) {
             span.setStatus({ code: SpanStatusCode.ERROR });
-            span.recordException(error);
+            span.recordException(error as Error);
             this.logger.error('webhooks.retry.failed', {
               component: 'webhooks',
               jobId: job.id,

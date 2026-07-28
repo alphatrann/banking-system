@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsStrongPassword, Length } from 'class-validator';
+import { IsEmail, IsStrongPassword } from 'class-validator';
 
 export class CreateAccountDto {
   @IsEmail()

@@ -63,6 +63,7 @@ services:
     volumes:
       - grafana_data_dev:/var/lib/grafana
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
       - ./grafana/grafana.ini:/etc/grafana/grafana.ini
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: 'true'

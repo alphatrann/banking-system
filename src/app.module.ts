@@ -1,4 +1,4 @@
-import { seconds, ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { seconds, ThrottlerModule } from '@nestjs/throttler';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import * as Joi from 'joi';
@@ -15,6 +15,7 @@ import { HttpLoggingInterceptor } from './logger/http-logging.interceptor';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { UserThrottlerGuard } from './guards/user-throttler.guard';
 import { MetricsModule } from './metrics/metrics.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { MetricsModule } from './metrics/metrics.module';
       },
     }),
     MetricsModule,
+    HealthModule,
   ],
   providers: [
     AppService,

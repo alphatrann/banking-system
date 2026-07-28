@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_ENV: test
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: payment-system-test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Get Yarn cache directory
+        id: yarn-cache-dir
+        run: echo "dir=$(yarn config get cacheFolder)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Yarn dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.yarn-cache-dir.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Write test environment
+        run: |
+          cat > .env.test.local <<'EOF'
+          DATABASE_URL=postgres://postgres:postgres@localhost:5432/payment-system-test
+          JWT_SECRET=ci-test-secret
+          CACHE_URL=redis://localhost:6379
+          MAIL_TRANSPORT=smtp://localhost:1025
+          RECEIPT_ENC_MASTER_KEY_V1="ci-test-secret"
+          WEBHOOK_ENC_MASTER_KEY_V1="ci-test-secret"
+          RECEIPT_ENC_ACTIVE_KEY_VERSION=1
+          WEBHOOK_ENC_ACTIVE_KEY_VERSION=1
+          EOF
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Generate Prisma client
+        run: yarn prisma generate
+
+      - name: Lint
+        run: yarn lint
+
+      - name: Type check
+        run: yarn tsc --noEmit -p tsconfig.json
+
+      - name: Unit tests
+        run: yarn test
+
+      - name: Reset test database
+        run: yarn migrate:reset:test
+
+      - name: E2E tests
+        run: yarn test:e2e --detectOpenHandles
+
+      - name: Build
+        run: yarn build

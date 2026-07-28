@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { EventType, QueueName } from '../queues/enums';
+import { EventType } from '../queues/enums';
 import { generateId } from './id';
 import { WebhookEventType } from '../webhooks/enums';
 import { TransactionWebhookPayload } from '../outbox/interfaces/job-payload';
@@ -31,7 +31,7 @@ export function buildSuccessOutboxJobs(
           endpointId: id,
           eventId,
           event: WebhookEventType.TransferCompleted,
-          transaction: transaction as any,
+          transaction: transaction as unknown as Prisma.InputJsonValue,
         },
       };
     }),
@@ -59,7 +59,7 @@ export function buildFailureOutboxJobs(
         eventId,
         statusCode,
         error,
-        transaction: transaction as any,
+        transaction: transaction as unknown as Prisma.InputJsonValue,
         event: WebhookEventType.TransferFailed,
       },
     };
