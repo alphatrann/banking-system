@@ -1,0 +1,266 @@
+{
+  "id": null,
+  "uid": "banking-transfers-ledger",
+  "title": "Banking System / Transfers & Ledger",
+  "description": "Transfer request throughput, failures, latency and ledger/DB activity for the banking-system app.",
+  "tags": ["banking-system", "transfers", "ledger"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Transfers",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Transfer Request Rate",
+      "description": "Rate of transfer requests received (transfer_requests_total).",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum(rate(transfer_requests_total[5m]))",
+          "legendFormat": "requests/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Transfer Failure Rate by Reason",
+      "description": "Rate of failed transfers (transfer_failures_total) broken down by the reason label.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum by (reason) (rate(transfer_failures_total[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Duplicate Transfer Prevented Rate",
+      "description": "Rate of duplicate transfers prevented by the idempotency layer.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum(rate(duplicate_transfer_prevented_total[5m]))",
+          "legendFormat": "duplicates prevented/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Transfer Duration (p50 / p95 / p99)",
+      "description": "Transfer API duration percentiles computed from the transfer_duration_seconds histogram.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 5 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(transfer_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(transfer_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(transfer_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Money Transferred Rate",
+      "description": "Rate of money moved per second (money_transferred_total), in minor currency units (cents).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum(rate(money_transferred_total[5m]))",
+          "legendFormat": "amount/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Completed Transfers (last 1h)",
+      "description": "Total completed transfers over the last hour.",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum(increase(completed_transfers_total[1h]))",
+          "legendFormat": "completed",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "heatmap",
+      "title": "Transfer Amount Distribution",
+      "description": "Distribution of transfer amounts (transfer_amount histogram) for anomaly detection.",
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum by (le) (rate(transfer_amount_bucket[5m]))",
+          "format": "heatmap",
+          "legendFormat": "{{le}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "Ledger & Database",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Ledger Entries Created Rate",
+      "description": "Rate of ledger entries created (ledger_entries_created_total).",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum(rate(ledger_entries_created_total[5m]))",
+          "legendFormat": "entries/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "DB Transaction Duration (p50 / p95 / p99) by Operation",
+      "description": "Percentiles of db_transaction_duration_seconds, split by the operation label.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 5 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "histogram_quantile(0.50, sum by (le, operation) (rate(db_transaction_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{operation}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(db_transaction_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{operation}}",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "histogram_quantile(0.99, sum by (le, operation) (rate(db_transaction_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{operation}}",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Ledger Query Duration (p95)",
+      "description": "p95 duration of ledger queries (ledger_query_duration_seconds).",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 5 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ledger_query_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "gauge",
+      "title": "Active DB Transactions",
+      "description": "Current number of active DB transactions (active_db_transactions up-down counter).",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 34 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "max": 50 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "sum(active_db_transactions)",
+          "legendFormat": "active",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
