@@ -76,76 +76,13 @@ The architecture intentionally explores production-inspired backend reliability 
 
 # Key Engineering Decisions
 
-## Ledger-Based Accounting
+The system's core design choices — ledger-based accounting, the transactional outbox pattern, async processing for non-critical workflows, PostgreSQL with serializable isolation, and Redis + BullMQ for job processing — are documented as Architecture Decision Records (ADRs), including the context, trade-offs, and alternatives considered for each. See the [ADR log](./docs/adr/README.md) for the full index.
 
-Balances are not stored as mutable values. Instead, balances are derived from immutable ledger entries.
-
-This design improves:
-
-* auditability
-* consistency
-* transaction traceability
-* corruption resistance
-
-It also mirrors how many real financial systems model account state.
-
----
-
-## Transactional Outbox Pattern
-
-Transfer-related events are written into an outbox table within the same database transaction as ledger updates.
-
-An outbox worker later polls unpublished events and publishes jobs into Redis queues.
-
-This prevents situations where:
-
-* database writes succeed
-* but async jobs fail to enqueue
-
-which could otherwise produce inconsistent side effects.
-
----
-
-## Async Processing
-
-Customer-facing transaction APIs only handle balance-critical operations synchronously.
-
-Non-user-facing workflows are processed asynchronously:
-
-* email delivery
-* webhook delivery
-* receipt generation
-
-This keeps request latency predictable while isolating slower external operations.
-
----
-
-## PostgreSQL for Strong Consistency
-
-PostgreSQL was chosen because transactional guarantees are critical for financial operations.
-
-The system uses:
-
-* ACID transactions
-* row-level locking
-* transaction isolation
-* atomic writes
-
-to protect against race conditions and invalid balances during concurrent transfers.
-
----
-
-## Redis + BullMQ
-
-Redis with BullMQ was selected for:
-
-* lightweight operational setup
-* good NodeJS ecosystem integration
-* retry support
-* delayed jobs
-* DLQ workflows
-
-The project intentionally avoids introducing heavier infrastructure such as Kafka or RabbitMQ since the learning focus is reliability patterns rather than high-throughput distributed streaming.
+* [ADR-0001: Ledger-Based Accounting](./docs/adr/0001-ledger-based-accounting.md)
+* [ADR-0002: Transactional Outbox Pattern](./docs/adr/0002-transactional-outbox-pattern.md)
+* [ADR-0003: Async Processing for Non-Critical Workflows](./docs/adr/0003-async-processing-for-non-critical-workflows.md)
+* [ADR-0004: PostgreSQL with Serializable Isolation](./docs/adr/0004-postgresql-with-serializable-isolation.md)
+* [ADR-0005: Redis and BullMQ for Job Processing](./docs/adr/0005-redis-and-bullmq-for-job-processing.md)
 
 ---
 
@@ -181,280 +118,65 @@ The project intentionally avoids introducing heavier infrastructure such as Kafk
 
 ---
 
+# Project Structure
+
+```txt
+banking-system/
+├── src/                      # NestJS source (5 processes built from this one tree — see ARCHITECTURE.md)
+│   ├── main.api.ts            # API entrypoint — bootstraps AppModule (HTTP)
+│   ├── main.outbox.ts         # Outbox worker entrypoint — standalone OutboxModule
+│   ├── main.mail.ts           # Mail worker entrypoint — standalone MailSenderModule
+│   ├── main.receipt.ts        # Receipt worker entrypoint — standalone ReceiptGeneratorModule
+│   ├── main.webhooks.ts       # Webhook worker entrypoint — standalone WebhooksSenderModule
+│   ├── app.module.ts          # API process root module
+│   ├── telemetry.ts           # OpenTelemetry SDK bootstrap (tracing)
+│   ├── metrics.ts             # OpenTelemetry metric instrument definitions
+│   │
+│   ├── auth/                  # JWT + local login, guards, register/login/me routes
+│   ├── users/                 # Account CRUD/lookup (module name: accounts.module.ts → UsersModule)
+│   ├── transactions/          # Transfer orchestration, ledger writes, idempotency keys
+│   ├── webhooks/               # Webhook endpoint CRUD + registered-endpoint lookups (shared by 3 processes)
+│   ├── webhooks-sender/        # Webhook delivery worker (BullMQ processor, signs + POSTs payloads)
+│   ├── outbox/                 # Outbox poller — claims pending outbox rows, publishes to Redis queues
+│   ├── mail/                   # MailerModule wrapper (SMTP transport + Handlebars templates), @Global()
+│   ├── mail-sender/             # Email delivery worker (BullMQ processor)
+│   ├── receipts/                # Receipt PDF/storage helpers shared by receipt-generator & mail-sender
+│   ├── receipt-generator/       # Receipt generation worker — renders PDF, uploads to MinIO, re-enqueues via outbox
+│   ├── minio/                   # MinIO/S3 client provider, @Global()
+│   ├── queues/                  # BullMQ queue + DLQ registration, job option config
+│   ├── prisma/                  # PrismaService/PrismaModule, DB error-code helpers
+│   ├── metrics/                 # MetricsService (periodic gauges for queue depth etc.)
+│   ├── logger/                  # Winston + Loki structured logging module, HTTP logging interceptor
+│   ├── health/                  # Liveness/readiness endpoints (Terminus)
+│   ├── guards/                  # Cross-cutting guards (e.g. per-user throttler)
+│   ├── constants/                # Shared constants (e.g. base account amount, outbox retry limits)
+│   └── utils/                    # ID generation, hashing, outbox job builders, formatters
+│
+├── prisma/
+│   ├── schema.prisma           # Data model — see ARCHITECTURE.md for the generated ER diagram
+│   └── migrations/             # SQL migration history
+│
+├── test/                      # Jest e2e specs
+├── docs/
+│   ├── API.md                 # HTTP route reference (this doc's sibling)
+│   └── adr/                   # Architecture Decision Records
+├── nginx/, grafana/, prometheus/, loki/, otel-collector/   # Provisioning/config for the observability + edge stack
+├── nest-cli.*.json            # One Nest CLI build config per process (api/outbox/mail/receipt/webhooks)
+├── compose.dev.yml / compose.prod.yml / compose.test.yml   # Docker Compose stacks per environment
+├── ARCHITECTURE.md            # Deep-dive diagrams and design notes
+└── README.md                  # You are here
+```
+
+---
+
 # Architecture
 
-## High-Level System Architecture
-
-```mermaid
-flowchart LR
-    %% Clients
-    U[👥 Users]
-
-    %% Edge
-    NGINX["🟩 NGINX<br/>Reverse Proxy"]
-
-    %% API Layer
-    API["🟥 NestJS API"]
-
-    %% Core Infra
-    PG[(🐘 PostgreSQL)]
-    REDIS[(🟥 Redis / BullMQ)]
-    S3[(🟩 MinIO / S3)]
-
-    %% Workers
-    OUTBOX["🟥 Outbox Worker"]
-    MAIL["📧 Email Worker"]
-    WEBHOOK["🔔 Webhook Worker"]
-    RECEIPT["🧾 Receipt Worker"]
-
-    %% External
-    EMAIL["✉️ Mail Provider"]
-
-    %% Observability
-    OTEL["📡 OpenTelemetry"]
-    PROM["🔥 Prometheus"]
-    GRAF["📊 Grafana"]
-    LOKI["🪵 Loki"]
-    JAEGER["🕸️ Jaeger"]
-
-    %% Flow
-    U --> NGINX --> API
-
-    API --> PG
-    API --> REDIS
-
-    OUTBOX --> PG
-    OUTBOX --> REDIS
-
-    REDIS --> MAIL
-    REDIS --> WEBHOOK
-    REDIS --> RECEIPT
-
-    RECEIPT --> S3
-    MAIL --> S3
-
-    MAIL --> EMAIL
-
-    API -. telemetry .-> OTEL
-    MAIL -. telemetry .-> OTEL
-    WEBHOOK -. telemetry .-> OTEL
-    RECEIPT -. telemetry .-> OTEL
-
-    OTEL --> PROM
-    OTEL --> JAEGER
-
-    API -. logs .-> LOKI
-    MAIL -. logs .-> LOKI
-    WEBHOOK -. logs .-> LOKI
-    RECEIPT -. logs .-> LOKI
-
-    PROM --> GRAF
-    LOKI --> GRAF
-
-    %% Styling
-    classDef api fill:#ffdddd,stroke:#cc0000,color:#000;
-    classDef infra fill:#ddeeff,stroke:#0066cc,color:#000;
-    classDef worker fill:#fff0cc,stroke:#cc8800,color:#000;
-    classDef obs fill:#eee0ff,stroke:#7a3db8,color:#000;
-    classDef storage fill:#ddffdd,stroke:#228822,color:#000;
-
-    class API,OUTBOX,MAIL,WEBHOOK,RECEIPT api;
-    class PG,REDIS,S3 storage;
-    class OTEL,PROM,GRAF,LOKI,JAEGER obs;
-    class NGINX infra;
-```
-
----
-
-## Transfer Lifecycle
-
-```mermaid
-sequenceDiagram
-    autonumber
-
-    actor User
-    participant API as NestJS API
-    participant DB as PostgreSQL
-    participant OUTBOX as Outbox Table
-    participant WORKER as Outbox Worker
-    participant QUEUE as Redis Queue
-    participant EMAIL as Email Worker
-    participant RECEIPT as Receipt Worker
-    participant WEBHOOK as Webhook Worker
-    participant S3 as MinIO/S3
-
-    User->>API: POST /transfers
-
-    API->>DB: Begin transaction
-
-    API->>DB: Lock sender account row
-    API->>DB: Validate balance
-
-    API->>DB: Insert ledger entries
-    API->>DB: Insert transfer record
-
-    API->>OUTBOX: Insert outbox events
-
-    API->>DB: Commit transaction
-
-    API-->>User: 200 OK
-
-    WORKER->>OUTBOX: Poll unpublished events
-    WORKER->>QUEUE: Enqueue jobs
-
-    QUEUE->>RECEIPT: receipt.generate
-    RECEIPT->>S3: Upload PDF receipt
-
-    QUEUE->>EMAIL: transfer.completed
-    EMAIL->>S3: Fetch receipt
-    EMAIL-->>User: Send email
-
-    QUEUE->>WEBHOOK: transfer.completed
-    WEBHOOK-->>User: Send webhook
-```
-
----
-
-## Retry + DLQ Flow
-
-```mermaid
-flowchart TD
-
-    JOB["📦 Queue Job"]
-    WORKER["🟥 Worker"]
-
-    SUCCESS["✅ Success"]
-    RETRY["🔁 Retry with Backoff"]
-    DLQ["💀 Dead Letter Queue"]
-
-    ALERT["🚨 Monitoring / Alerting"]
-
-    JOB --> WORKER
-
-    WORKER -->|Success| SUCCESS
-
-    WORKER -->|Failure| RETRY
-
-    RETRY -->|Retry limit exceeded| DLQ
-    RETRY -->|Retry again| WORKER
-
-    DLQ --> ALERT
-
-    classDef success fill:#ddffdd,stroke:#228822,color:#000;
-    classDef fail fill:#ffdddd,stroke:#cc0000,color:#000;
-    classDef process fill:#ddeeff,stroke:#0066cc,color:#000;
-
-    class SUCCESS success;
-    class RETRY,DLQ fail;
-    class JOB,WORKER,ALERT process;
-```
-
----
-
-## Observability Flow
-
-```mermaid
-flowchart LR
-
-    API["🟥 API"]
-    WORKERS["🟥 Workers"]
-
-    OTEL["📡 OpenTelemetry"]
-    LOKI["🪵 Loki"]
-
-    PROM["🔥 Prometheus"]
-    JAEGER["🕸️ Jaeger"]
-    GRAF["📊 Grafana"]
-
-    API -. traces .-> OTEL
-    WORKERS -. traces .-> OTEL
-
-    API -. logs .-> LOKI
-    WORKERS -. logs .-> LOKI
-
-    OTEL --> PROM
-    OTEL --> JAEGER
-
-    PROM --> GRAF
-    LOKI --> GRAF
-
-    classDef app fill:#ffdddd,stroke:#cc0000,color:#000;
-    classDef obs fill:#eee0ff,stroke:#7a3db8,color:#000;
-
-    class API,WORKERS app;
-    class OTEL,LOKI,PROM,JAEGER,GRAF obs;
-```
-
----
-
-# Request Lifecycle
-
-A typical money transfer follows this flow:
-
-1. Client sends transfer request
-2. API validates authentication and rate limits
-3. Database transaction begins
-4. Sender account row is locked
-5. Ledger entries are inserted
-6. Transfer record is created
-7. Outbox events are inserted atomically
-8. Database transaction commits
-9. Outbox worker publishes async jobs
-10. Workers process:
-
-    * email delivery
-    * webhook delivery
-    * receipt generation
-
-This architecture separates:
-
-* balance-critical synchronous operations
-  from:
-* non-critical eventual-consistency workflows
-
----
-
-# Reliability Considerations
-
-## Idempotency
-
-Transfers support idempotency keys to prevent accidental double charges caused by retries or duplicate client submissions.
-
----
-
-## Retries and DLQs
-
-Workers retry failed jobs with backoff strategies.
-
-Jobs exceeding retry limits are moved into dead-letter queues for inspection and replay.
-
----
-
-## Failure Isolation
-
-External integrations such as:
-
-* email providers
-* webhook targets
-* PDF generation
-
-are isolated behind async workers to prevent them from affecting transaction latency.
-
----
-
-# Security Considerations
-
-The project includes several backend-focused security mechanisms:
-
-* Signed webhook payloads
-* Encrypted webhook secrets
-* Encrypted receipt storage
-* JWT authentication
-* Rate limiting
-* Request tracing
-* Structured audit logging
-
-This is not intended to be a production-ready banking platform. The project focuses primarily on backend systems learning and reliability exploration.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for diagrams (system architecture, transfer lifecycle, retry/DLQ
+flow, observability flow, data model ER diagram, module boundaries, deployment topology) and a deep-dive on
+request lifecycle, reliability, and security considerations.
+
+For a route-by-route breakdown of the HTTP API, see [docs/API.md](./docs/API.md) (a live Swagger UI is also
+available at `/api`).
 
 ---
 
@@ -594,6 +316,21 @@ http://localhost:5000
 * Mailpit Inbox: `mail.localhost`
 * Grafana: `grafana.localhost`
 * MinIO: `minio.localhost`
+
+## Grafana
+
+Grafana is pre-provisioned as code — both the Loki and Prometheus datasources
+(`grafana/provisioning/datasources/`) and a set of dashboards
+(`grafana/provisioning/dashboards/`) are auto-loaded on `docker compose up`.
+No manual setup is required; open Grafana and look under the
+**Banking System** folder for:
+
+* **Transfers & Ledger** — transfer request/failure rates, duration
+  percentiles, money transferred, ledger entries, DB transaction duration and
+  active transactions.
+* **Outbox & Queues** — outbox events created/processed, enqueue failures,
+  processing delay, pending events, and BullMQ job/queue/DLQ metrics.
+* **Security** — auth failures and rate limit hits.
 
 ---
 
