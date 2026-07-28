@@ -27,7 +27,7 @@ export class AuthService {
       const account = await this.accountsService.findByEmail(email);
       await this.verifyPassword(account.password, password);
       return account;
-    } catch (error) {
+    } catch {
       // for security reasons
       authFailuresTotal.add(1);
       throw new BadRequestException({

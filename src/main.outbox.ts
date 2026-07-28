@@ -18,12 +18,14 @@ async function bootstrap() {
 
   await listener.connect();
   await listener.query('LISTEN outbox_channel');
-  listener.on('notification', async () => {
-    await outboxService.pollOutbox();
-  });
 
-  setInterval(async () => {
-    await outboxService.pollOutbox();
-  }, 5000);
+  const pollOutbox = () => {
+    outboxService.pollOutbox().catch((error: unknown) => {
+      console.error('Failed to poll outbox', error);
+    });
+  };
+
+  listener.on('notification', pollOutbox);
+  setInterval(pollOutbox, 5000);
 }
 bootstrap();

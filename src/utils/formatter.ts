@@ -9,7 +9,7 @@ export function formatUSD(amount: number, inCent = false) {
 
 export function formatError(error: Error) {
   return `ERROR: ${error.name}
-  Cause: ${error.cause}
+  Cause: ${String(error.cause)}
   Message: ${error.message}
   Traceback:
   ${error.stack}`;

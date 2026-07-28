@@ -11,7 +11,7 @@ export class UserThrottlerGuard extends ThrottlerGuard {
     return can;
   }
 
-  protected async getTracker(req: Request): Promise<string> {
+  protected getTracker(req: Request): Promise<string> {
     const authHeader = req.headers?.authorization;
 
     if (authHeader?.startsWith('Bearer ')) {
@@ -21,12 +21,12 @@ export class UserThrottlerGuard extends ThrottlerGuard {
           token,
           process.env.JWT_SECRET!,
         ) as jwt.JwtPayload;
-        return `user-${payload.sub}`;
+        return Promise.resolve(`user-${payload.sub}`);
       } catch {
-        return `ip-${req.ip}`;
+        return Promise.resolve(`ip-${req.ip}`);
       }
     }
 
-    return `ip-${req.ip}`;
+    return Promise.resolve(`ip-${req.ip}`);
   }
 }

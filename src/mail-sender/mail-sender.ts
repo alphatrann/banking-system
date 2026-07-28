@@ -10,7 +10,7 @@ import { Job, Queue, UnrecoverableError } from 'bullmq';
 import { SendEmailJobPayload } from '../outbox/interfaces/job-payload';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
-import { EventStatus } from '@prisma/client';
+import { EventStatus, Prisma } from '@prisma/client';
 import { ReceiptsService } from '../receipts/receipts.service';
 import { formatError } from '../utils/formatter';
 import {
@@ -119,7 +119,7 @@ export class MailSender extends WorkerHost {
             where: { id: jobId },
             create: {
               id: jobId,
-              payload: payload as any,
+              payload: payload as unknown as Prisma.InputJsonValue,
               toAccountId: payload.sendEmailAccountId,
               status: EventStatus.Processing,
             },
@@ -268,14 +268,14 @@ export class MailSender extends WorkerHost {
                   ? 'unrecoverable'
                   : 'max_attempts_reached',
             });
-          } catch (error) {
-            span.recordException(error);
+          } catch (error: unknown) {
+            span.recordException(error as Error);
             span.setStatus({ code: SpanStatusCode.ERROR });
             this.logger.error('mail.dlq.failed', {
               component: 'mail',
               jobId: job.id,
               attempts: job.attemptsMade,
-              error: error.stack,
+              error: error instanceof Error ? error.stack : String(error),
             });
             jobsFailedTotal.add(1, {
               queue: QueueName.Emails,
@@ -288,10 +288,10 @@ export class MailSender extends WorkerHost {
         },
       );
     } else {
-      await tracer.startActiveSpan(
+      tracer.startActiveSpan(
         'mail.retry',
         { links: parentSpanContext ? [{ context: parentSpanContext }] : [] },
-        async (span) => {
+        (span) => {
           try {
             this.logger.warn('mail.retry.scheduled', {
               component: 'mail',

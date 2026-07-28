@@ -7,6 +7,18 @@ import { generateId } from '../src/utils/id';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { PrismaService } from '../src/prisma/prisma.service';
 
+interface LoginResponseBody {
+  accessToken: string;
+}
+
+interface RegisterResponseBody {
+  data: { id: string };
+}
+
+interface BalanceResponseBody {
+  balance: number;
+}
+
 describe('Positive balance after concurrent transactions test', () => {
   let app: INestApplication<App>;
   let accessToken: string;
@@ -41,8 +53,11 @@ describe('Positive balance after concurrent transactions test', () => {
         ...accountPayload,
         email: `user_${Date.now()}_${Math.random()}@test.com`,
       });
-    accessToken = firstAccountLoginResponse.body.accessToken;
-    toAccountId = destinationAccountRegisterResponse.body.data.id;
+    accessToken = (firstAccountLoginResponse.body as LoginResponseBody)
+      .accessToken;
+    toAccountId = (
+      destinationAccountRegisterResponse.body as RegisterResponseBody
+    ).data.id;
   });
 
   afterEach(async () => {
@@ -83,6 +98,8 @@ describe('Positive balance after concurrent transactions test', () => {
       .expect(200);
 
     // the result may not be 10 due to serialization behavior, but most importantly, the balance is never negative
-    expect(balanceResponse.body.balance).toBeGreaterThanOrEqual(0);
+    expect(
+      (balanceResponse.body as BalanceResponseBody).balance,
+    ).toBeGreaterThanOrEqual(0);
   });
 });

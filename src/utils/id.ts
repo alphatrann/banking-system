@@ -7,7 +7,7 @@ function makeSlug(length: number): string {
   const randomBytes = crypto.randomBytes(length);
   let result = '';
   for (let i = 0; i < length; i++) {
-    result += validChars[randomBytes[i]! % validChars.length];
+    result += validChars[randomBytes[i] % validChars.length];
   }
   return result;
 }

@@ -10,9 +10,7 @@ import * as Minio from 'minio';
     {
       inject: [ConfigService],
       provide: MINIO,
-      useFactory: async (
-        configService: ConfigService,
-      ): Promise<Minio.Client> => {
+      useFactory: (configService: ConfigService): Minio.Client => {
         const client = new Minio.Client({
           endPoint: configService.getOrThrow('MINIO_ENDPOINT'),
           port: +configService.getOrThrow('MINIO_PORT'),

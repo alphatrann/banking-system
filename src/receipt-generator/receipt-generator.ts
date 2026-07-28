@@ -305,14 +305,14 @@ export class ReceiptGenerator extends WorkerHost {
                   ? 'unrecoverable'
                   : 'max_attempts_reached',
             });
-          } catch (error) {
-            span.recordException(error);
+          } catch (error: unknown) {
+            span.recordException(error as Error);
             span.setStatus({ code: SpanStatusCode.ERROR });
             this.logger.error('receipt.dlq.failed', {
               component: 'receipt',
               id: job.id,
               attempts: job.attemptsMade,
-              error: error.stack,
+              error: error instanceof Error ? error.stack : String(error),
             });
             jobsFailedTotal.add(1, {
               queue: QueueName.Receipts,

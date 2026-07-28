@@ -124,9 +124,11 @@ export class OutboxService {
               attempts: job.attempt_count,
               durationMs: Date.now() - startMs,
             });
-          } catch (error) {
-            span.recordException(error);
+          } catch (error: unknown) {
+            span.recordException(error as Error);
             span.setStatus({ code: SpanStatusCode.ERROR });
+            const errorStack =
+              error instanceof Error ? error.stack : String(error);
             if (job.attempt_count + 1 >= OUTBOX_MAX_ATTEMPTS) {
               this.logger.error('outbox.enqueue.failed', {
                 component: 'outbox',
@@ -134,7 +136,7 @@ export class OutboxService {
                 attempts: job.attempt_count,
                 traceId: span.spanContext().traceId,
                 durationMs: Date.now() - startMs,
-                error: error.stack,
+                error: errorStack,
               });
             } else {
               this.logger.warn('outbox.retry.scheduled', {
@@ -142,7 +144,7 @@ export class OutboxService {
                 jobId: job.id,
                 attempts: job.attempt_count,
                 durationMs: Date.now() - startMs,
-                error: error.stack,
+                error: errorStack,
               });
             }
             throw error;

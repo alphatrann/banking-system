@@ -37,7 +37,7 @@ export class HttpLoggingInterceptor implements NestInterceptor {
           traceId,
         });
       }),
-      catchError((err) => {
+      catchError((err: unknown) => {
         const span = trace.getSpan(context.active());
         const traceId = span?.spanContext().traceId;
         this.logger.error('http.error', {
@@ -46,7 +46,7 @@ export class HttpLoggingInterceptor implements NestInterceptor {
           path,
           duration: Date.now() - now,
           traceId,
-          error: err.message,
+          error: err instanceof Error ? err.message : String(err),
         });
         throw err;
       }),
