@@ -1,24 +1,17 @@
-import {
-  BadRequestException,
-  ConflictException,
-  HttpException,
-  HttpStatus,
-  Injectable,
-} from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { generateId } from '../utils/id';
-import { hash } from '../utils/hash';
-import { IdempotencyStatus, Prisma, EventStatus } from '@prisma/client';
+import { Prisma, EventStatus } from '@prisma/client';
 import {
   isForeignKeyViolation,
   isSerializationFailure,
-  isUniqueViolation,
 } from '../prisma/error-codes';
-import { BASE_ACCOUNT_AMOUNT } from '../constants';
 import { buildFailureOutboxJobs, buildSuccessOutboxJobs } from '../utils/jobs';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { WebhookEventType } from '../webhooks/enums';
+import { LedgerService } from './ledger.service';
+import { IdempotencyService } from './idempotency.service';
 import {
   context,
   propagation,
@@ -26,19 +19,22 @@ import {
   SpanStatusCode,
 } from '@opentelemetry/api';
 import {
-  duplicateTransferPreventedTotal,
   transferDurationSeconds,
   transferFailuresTotal,
   transferRequestsTotal,
   moneyTransferredTotal,
   completedTransfersTotal,
   transferAmountHistogram,
-  ledgerEntriesCreatedTotal,
-  ledgerQueryDurationSeconds,
   activeDbTransactions,
   dbTransactionDurationSeconds,
   outboxEventsCreatedTotal,
 } from '../metrics';
+
+type TransferResponseBody = {
+  statusCode: HttpStatus;
+  error?: string;
+  transaction?: { id: string; amount: number; createdAt: string };
+};
 
 @Injectable()
 export class TransactionsService {
@@ -48,7 +44,13 @@ export class TransactionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly webhooksService: WebhooksService,
+    private readonly ledger: LedgerService,
+    private readonly idempotency: IdempotencyService,
   ) {}
+
+  async computeBalance(accountId: string) {
+    return this.ledger.computeBalance(accountId);
+  }
 
   async transferMoney(
     dto: CreateTransactionDto,
@@ -66,9 +68,9 @@ export class TransactionsService {
         span.setAttribute('transaction.to_account', dto.toAccountId);
         span.setAttribute('idempotency_key', idempotencyKey);
 
-        const requestHash = this.hashRequest(idempotencyKey, dto);
+        const requestHash = this.idempotency.hashRequest(idempotencyKey, dto);
 
-        const existingResponseBody = await this.checkIdempotency(
+        const existingResponseBody = await this.idempotency.checkIdempotency(
           fromAccountId,
           idempotencyKey,
           requestHash,
@@ -76,13 +78,22 @@ export class TransactionsService {
 
         if (existingResponseBody) return existingResponseBody;
 
-        const responseBody = await this.createTransaction(
+        const { responseBody, finalized } = await this.createTransaction(
           fromAccountId,
           dto,
           new Date(start),
+          idempotencyKey,
         );
 
-        await this.finalize(responseBody, fromAccountId, dto, idempotencyKey);
+        // Happy-path and business-rule-failure responses are finalized
+        // (idempotency key completed + failure outbox events written)
+        // inside the same DB transaction that produced them, so there is
+        // no crash window between "transfer decided" and "marked done".
+        // Only genuinely unexpected errors (thrown out of the transaction,
+        // e.g. a foreign-key race) still need a separate finalize pass.
+        if (!finalized) {
+          await this.finalize(responseBody, fromAccountId, dto, idempotencyKey);
+        }
 
         if (responseBody.statusCode !== HttpStatus.CREATED) {
           throw new HttpException(responseBody, responseBody.statusCode);
@@ -107,75 +118,6 @@ export class TransactionsService {
   }
 
   // ===============================
-  // Idempotency Phase
-  // ===============================
-
-  private async checkIdempotency(
-    accountId: string,
-    key: string,
-    requestHash: string,
-  ) {
-    const tracer = trace.getTracer(this.TRACER_NAME);
-
-    return await tracer.startActiveSpan('idempotency.check', async (span) => {
-      try {
-        await this.prisma.idempotencyKey.create({
-          data: {
-            accountId,
-            key,
-            requestHash,
-            status: IdempotencyStatus.Processing,
-            responseBody: {},
-          },
-        });
-      } catch (error) {
-        if (!isUniqueViolation(error)) {
-          span.recordException(error);
-          span.setStatus({ code: SpanStatusCode.ERROR });
-          transferFailuresTotal.add(1, { reason: 'unknown_error' });
-          throw error;
-        }
-
-        const existing = await this.prisma.idempotencyKey.findUnique({
-          where: {
-            accountId_key: { accountId, key },
-          },
-        });
-
-        if (!existing) {
-          transferFailuresTotal.add(1, { reason: 'race_condition' });
-          throw new ConflictException('Race condition detected');
-        }
-
-        if (existing.requestHash !== requestHash) {
-          transferFailuresTotal.add(1, { reason: 'malformed_request' });
-          throw new BadRequestException(
-            'Idempotency key reused with different payload',
-          );
-        }
-
-        if (existing.status === IdempotencyStatus.Completed) {
-          if (existing.responseCode !== HttpStatus.CREATED) {
-            transferFailuresTotal.add(1, { reason: 'existing_error_response' });
-            throw new HttpException(
-              existing.responseBody as object,
-              existing.responseCode!,
-            );
-          }
-
-          duplicateTransferPreventedTotal.add(1);
-          return existing.responseBody;
-        }
-
-        transferFailuresTotal.add(1, { reason: 'already_processing' });
-        throw new ConflictException('Request is still processing');
-      } finally {
-        span.end();
-      }
-    });
-  }
-
-  // ===============================
   // Transaction Phase
   // ===============================
 
@@ -183,17 +125,12 @@ export class TransactionsService {
     fromAccountId: string,
     dto: CreateTransactionDto,
     initiatedAt: Date,
-  ) {
+    idempotencyKey: string,
+  ): Promise<{ responseBody: TransferResponseBody; finalized: boolean }> {
     const tracer = trace.getTracer(this.TRACER_NAME);
 
     return await tracer.startActiveSpan('transaction.create', async (span) => {
       try {
-        let responseBody: {
-          statusCode: number;
-          error?: string;
-          transaction?: { id: string; amount: number; createdAt: string };
-        };
-
         for (
           let attempt = 1;
           attempt <= this.MAX_SERIALIZATION_RETRIES;
@@ -201,96 +138,37 @@ export class TransactionsService {
         ) {
           const start = performance.now();
           try {
-            responseBody = await this.prisma.$transaction(
+            const responseBody = await this.prisma.$transaction(
               async (tx) => {
                 activeDbTransactions.add(1, { operation: 'create_transfer' });
-                const fromBalance = await this.computeBalance(
+                const fromBalance = await this.ledger.computeBalance(
                   fromAccountId,
                   tx,
                 );
 
-                if (dto.toAccountId === fromAccountId) {
-                  transferFailuresTotal.add(1, { reason: 'same_account' });
-                  return {
-                    statusCode: HttpStatus.BAD_REQUEST,
-                    error:
-                      'Source account and destination account must be different',
-                  };
-                }
-
-                if (dto.amount > fromBalance) {
-                  transferFailuresTotal.add(1, {
-                    reason: 'insufficient_balance',
-                  });
-                  return {
-                    statusCode: HttpStatus.BAD_REQUEST,
-                    error: 'Insufficient balance',
-                  };
-                }
-
-                const toBalance = await this.computeBalance(
-                  dto.toAccountId,
+                const result = await this.decideTransfer(
                   tx,
-                );
-                const transaction = await this.handleTransaction(
                   fromAccountId,
-                  tx,
                   dto,
                   fromBalance,
-                  toBalance,
                   initiatedAt,
                 );
 
-                const { number } = await tx.receipt.create({
-                  data: {
-                    transactionId: transaction.id,
-                    id: generateId('rec'),
-                    status: EventStatus.Pending,
-                  },
-                  select: { number: true },
-                });
-
-                const carrier: Record<string, string> = {};
-                propagation.inject(context.active(), carrier);
-
-                const fromEndpoints =
-                  await this.webhooksService.findRegisteredEndpointIds(
-                    WebhookEventType.TransferCompleted,
-                    fromAccountId,
-                    tx,
-                  );
-
-                const toEndpoints =
-                  await this.webhooksService.findRegisteredEndpointIds(
-                    WebhookEventType.TransferCompleted,
-                    dto.toAccountId,
-                    tx,
-                  );
-
-                await this.insertOutbox(
-                  buildSuccessOutboxJobs(
-                    {
-                      id: transaction.id,
-                      fromAccountId,
-                      ...dto,
-                      occurredAt: transaction.createdAt.toISOString(),
-                      currency: 'USD',
-                    },
-                    Number(number),
-                    [...fromEndpoints, ...toEndpoints],
-                    carrier,
-                  ),
+                // Both the happy path and the business-rule-rejection
+                // paths are decided synchronously here, so we can complete
+                // the idempotency key and (for failures) write the failure
+                // outbox events atomically with everything else.
+                if (result.statusCode !== HttpStatus.CREATED) {
+                  await this.writeFailureOutbox(tx, fromAccountId, dto, result);
+                }
+                await this.idempotency.complete(
+                  fromAccountId,
+                  idempotencyKey,
+                  result,
                   tx,
                 );
 
-                return {
-                  statusCode: HttpStatus.CREATED,
-                  transaction: {
-                    id: transaction.id,
-                    amount: dto.amount,
-                    createdAt: transaction.createdAt.toISOString(),
-                  },
-                };
+                return result;
               },
               {
                 isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -298,21 +176,13 @@ export class TransactionsService {
             );
             dbTransactionDurationSeconds.record(
               (performance.now() - start) / 1000,
-              {
-                operation: 'create_transfer',
-                attempt,
-                status: 'success',
-              },
+              { operation: 'create_transfer', attempt, status: 'success' },
             );
-            return responseBody;
+            return { responseBody, finalized: true };
           } catch (error: any) {
             dbTransactionDurationSeconds.record(
               (performance.now() - start) / 1000,
-              {
-                operation: 'create_transfer',
-                attempt,
-                status: 'failed',
-              },
+              { operation: 'create_transfer', attempt, status: 'failed' },
             );
             if (
               isSerializationFailure(error) &&
@@ -322,18 +192,14 @@ export class TransactionsService {
               continue;
             }
 
-            if (error instanceof BadRequestException) {
-              return {
-                statusCode: error.getStatus(),
-                error: error.message,
-              };
-            }
-
             if (isForeignKeyViolation(error)) {
               transferFailuresTotal.add(1, { reason: 'account_not_found' });
               return {
-                statusCode: HttpStatus.NOT_FOUND,
-                error: "Destination account doesn't exist",
+                responseBody: {
+                  statusCode: HttpStatus.NOT_FOUND,
+                  error: "Destination account doesn't exist",
+                },
+                finalized: false,
               };
             }
 
@@ -342,13 +208,23 @@ export class TransactionsService {
 
             transferFailuresTotal.add(1, { reason: 'unknown_error' });
             return {
-              statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-              error: 'Internal error while processing transaction',
+              responseBody: {
+                statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+                error: 'Internal error while processing transaction',
+              },
+              finalized: false,
             };
           }
         }
 
-        return responseBody!;
+        // Unreachable: the loop above always returns on its final attempt
+        // (the serialization-retry branch only fires while attempt < max).
+        // Kept as a defensive guard instead of a non-null assertion so a
+        // future change to the retry logic fails loudly instead of
+        // returning `undefined` to the caller.
+        throw new Error(
+          'createTransaction exhausted retries without a terminal result',
+        );
       } finally {
         activeDbTransactions.add(-1, { operation: 'create_transfer' });
         span.end();
@@ -356,12 +232,139 @@ export class TransactionsService {
     });
   }
 
+  private async decideTransfer(
+    tx: Prisma.TransactionClient,
+    fromAccountId: string,
+    dto: CreateTransactionDto,
+    fromBalance: number,
+    initiatedAt: Date,
+  ): Promise<TransferResponseBody> {
+    if (dto.toAccountId === fromAccountId) {
+      transferFailuresTotal.add(1, { reason: 'same_account' });
+      return {
+        statusCode: HttpStatus.BAD_REQUEST,
+        error: 'Source account and destination account must be different',
+      };
+    }
+
+    if (dto.amount > fromBalance) {
+      transferFailuresTotal.add(1, { reason: 'insufficient_balance' });
+      return {
+        statusCode: HttpStatus.BAD_REQUEST,
+        error: 'Insufficient balance',
+      };
+    }
+
+    const toBalance = await this.ledger.computeBalance(dto.toAccountId, tx);
+    const transaction = await this.ledger.createLedgerEntries(
+      fromAccountId,
+      tx,
+      dto,
+      fromBalance,
+      toBalance,
+      initiatedAt,
+    );
+
+    const { number } = await tx.receipt.create({
+      data: {
+        transactionId: transaction.id,
+        id: generateId('rec'),
+        status: EventStatus.Pending,
+      },
+      select: { number: true },
+    });
+
+    const carrier: Record<string, string> = {};
+    propagation.inject(context.active(), carrier);
+
+    const fromEndpoints = await this.webhooksService.findRegisteredEndpointIds(
+      WebhookEventType.TransferCompleted,
+      fromAccountId,
+      tx,
+    );
+
+    const toEndpoints = await this.webhooksService.findRegisteredEndpointIds(
+      WebhookEventType.TransferCompleted,
+      dto.toAccountId,
+      tx,
+    );
+
+    await this.insertOutbox(
+      buildSuccessOutboxJobs(
+        {
+          id: transaction.id,
+          fromAccountId,
+          ...dto,
+          occurredAt: transaction.createdAt.toISOString(),
+          currency: 'USD',
+        },
+        Number(number),
+        [...fromEndpoints, ...toEndpoints],
+        carrier,
+      ),
+      tx,
+    );
+
+    return {
+      statusCode: HttpStatus.CREATED,
+      transaction: {
+        id: transaction.id,
+        amount: dto.amount,
+        createdAt: transaction.createdAt.toISOString(),
+      },
+    };
+  }
+
+  private async writeFailureOutbox(
+    tx: Prisma.TransactionClient,
+    fromAccountId: string,
+    dto: CreateTransactionDto,
+    responseBody: TransferResponseBody,
+  ) {
+    const carrier: Record<string, string> = {};
+    propagation.inject(context.active(), carrier);
+
+    const fromEndpoints = await this.webhooksService.findRegisteredEndpointIds(
+      WebhookEventType.TransferFailed,
+      fromAccountId,
+      tx,
+    );
+
+    const toEndpoints =
+      dto.toAccountId === fromAccountId
+        ? []
+        : await this.webhooksService.findRegisteredEndpointIds(
+            WebhookEventType.TransferFailed,
+            dto.toAccountId,
+            tx,
+          );
+
+    await this.insertOutbox(
+      buildFailureOutboxJobs(
+        {
+          id: generateId('txn'),
+          ...dto,
+          currency: 'USD',
+          fromAccountId,
+          occurredAt: new Date().toISOString(),
+        },
+        [...fromEndpoints, ...toEndpoints],
+        responseBody.statusCode,
+        responseBody.error ?? 'Unknown error',
+        carrier,
+      ),
+      tx,
+    );
+  }
+
   // ===============================
-  // Finalization Phase
+  // Finalization fallback (only reached when the main transaction threw
+  // and rolled back before a terminal response body could be decided —
+  // e.g. account_not_found races or unexpected errors).
   // ===============================
 
   private async finalize(
-    responseBody: any,
+    responseBody: TransferResponseBody,
     fromAccountId: string,
     dto: CreateTransactionDto,
     idempotencyKey: string,
@@ -373,50 +376,13 @@ export class TransactionsService {
       try {
         await this.prisma.$transaction(async (tx) => {
           activeDbTransactions.add(1, { operation: 'finalize_transfer' });
-          if (responseBody.statusCode !== HttpStatus.CREATED) {
-            const carrier: Record<string, string> = {};
-            propagation.inject(context.active(), carrier);
 
-            const fromEndpoints =
-              await this.webhooksService.findRegisteredEndpointIds(
-                WebhookEventType.TransferFailed,
-                fromAccountId,
-                tx,
-              );
+          await this.writeFailureOutbox(tx, fromAccountId, dto, responseBody);
 
-            const toEndpoints =
-              responseBody.statusCode === HttpStatus.NOT_FOUND ||
-              dto.toAccountId === fromAccountId
-                ? []
-                : await this.webhooksService.findRegisteredEndpointIds(
-                    WebhookEventType.TransferFailed,
-                    dto.toAccountId,
-                    tx,
-                  );
-
-            await this.insertOutbox(
-              buildFailureOutboxJobs(
-                {
-                  id: generateId('txn'),
-                  ...dto,
-                  currency: 'USD',
-                  fromAccountId,
-                  occurredAt: new Date().toISOString(),
-                },
-                [...fromEndpoints, ...toEndpoints],
-                responseBody.statusCode,
-                responseBody.error,
-                carrier,
-              ),
-              tx,
-            );
-          }
-
-          await this.updateIdempotencyKey(
+          await this.idempotency.complete(
             fromAccountId,
             idempotencyKey,
             responseBody,
-            IdempotencyStatus.Completed,
             tx,
           );
         });
@@ -439,84 +405,6 @@ export class TransactionsService {
     });
   }
 
-  // ===============================
-  // Domain Logic
-  // ===============================
-
-  private async handleTransaction(
-    fromAccountId: string,
-    tx: Prisma.TransactionClient,
-    dto: CreateTransactionDto,
-    fromBalance: number,
-    toBalance: number,
-    initiatedAt: Date,
-  ) {
-    const transaction = await tx.transaction.create({
-      data: {
-        id: generateId('txn'),
-        initiatedAt,
-        ledgerEntries: {
-          createMany: {
-            data: [
-              {
-                accountId: fromAccountId,
-                amount: -dto.amount,
-                runningBalance: fromBalance - dto.amount,
-              },
-              {
-                accountId: dto.toAccountId,
-                amount: dto.amount,
-                runningBalance: toBalance + dto.amount,
-              },
-            ],
-          },
-        },
-      },
-    });
-    ledgerEntriesCreatedTotal.add(2);
-    return transaction;
-  }
-
-  async computeBalance(accountId: string, tx?: Prisma.TransactionClient) {
-    const start = performance.now();
-    const mostRecentEntry = await (tx ?? this.prisma).ledgerEntry.findFirst({
-      where: { accountId },
-      orderBy: { id: 'desc' },
-      take: 1,
-    });
-
-    if (mostRecentEntry?.runningBalance) {
-      return Number(mostRecentEntry.runningBalance);
-    }
-
-    const {
-      _sum: { amount },
-    } = await (tx ?? this.prisma).ledgerEntry.aggregate({
-      _sum: { amount: true },
-      where: { accountId },
-    });
-
-    ledgerQueryDurationSeconds.record((performance.now() - start) / 1000);
-    return Number(amount ?? 0) + BASE_ACCOUNT_AMOUNT;
-  }
-
-  private async updateIdempotencyKey(
-    accountId: string,
-    key: string,
-    responseBody: any,
-    status: IdempotencyStatus,
-    tx?: Prisma.TransactionClient,
-  ) {
-    await (tx ?? this.prisma).idempotencyKey.update({
-      where: { accountId_key: { accountId, key } },
-      data: {
-        status,
-        responseBody,
-        responseCode: responseBody.statusCode,
-      },
-    });
-  }
-
   private async insertOutbox(
     jobs: Prisma.OutboxEventCreateManyInput[],
     tx?: Prisma.TransactionClient,
@@ -525,9 +413,5 @@ export class TransactionsService {
     await client.outboxEvent.createMany({ data: jobs });
     outboxEventsCreatedTotal.add(jobs.length);
     await client.$executeRawUnsafe(`NOTIFY outbox_channel`);
-  }
-
-  private hashRequest(idempotencyKey: string, dto: CreateTransactionDto) {
-    return hash(JSON.stringify({ idempotencyKey, ...dto }));
   }
 }
