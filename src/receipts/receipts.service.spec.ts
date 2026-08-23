@@ -66,8 +66,8 @@ describe('ReceiptsService', () => {
   it('proceeds to generate and mark Done when the claim succeeds', async () => {
     prisma.receipt.updateMany.mockResolvedValue({ count: 1 });
     configService.getOrThrow.mockImplementation((key: string) => {
-      if (key === 'WEBHOOK_ENC_ACTIVE_KEY_VERSION') return '1';
-      if (key === 'WEBHOOK_ENC_MASTER_KEY_V1') {
+      if (key === 'RECEIPT_ENC_ACTIVE_KEY_VERSION') return '1';
+      if (key === 'RECEIPT_ENC_MASTER_KEY_V1') {
         return Buffer.alloc(32, 1).toString('base64');
       }
       throw new Error(`unexpected config key ${key}`);
