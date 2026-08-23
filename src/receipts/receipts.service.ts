@@ -22,10 +22,10 @@ export class ReceiptsService {
 
   private encryptReceipt(buffer: Buffer) {
     const keyVersion = +this.configService.getOrThrow(
-      'WEBHOOK_ENC_ACTIVE_KEY_VERSION',
+      'RECEIPT_ENC_ACTIVE_KEY_VERSION',
     );
     const masterKey = this.configService.getOrThrow<string>(
-      `WEBHOOK_ENC_MASTER_KEY_V${keyVersion}`,
+      `RECEIPT_ENC_MASTER_KEY_V${keyVersion}`,
     );
     const iv = randomBytes(12);
     const cipher = createCipheriv(
@@ -50,7 +50,7 @@ export class ReceiptsService {
     keyVersion: number,
   ) {
     const masterKey = this.configService.getOrThrow<string>(
-      `WEBHOOK_ENC_MASTER_KEY_V${keyVersion}`,
+      `RECEIPT_ENC_MASTER_KEY_V${keyVersion}`,
     );
     const decipher = createDecipheriv(
       'aes-256-gcm',
