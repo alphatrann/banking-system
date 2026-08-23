@@ -1,10 +1,11 @@
 FROM node:22-alpine AS builder
 
+
 WORKDIR /app
 
-COPY package.json yarn.lock ./
-
-RUN yarn install --frozen-lockfile
+RUN corepack enable
+COPY package.json yarn.lock .yarnrc.yml ./
+RUN yarn install --immutable
 
 COPY . .
 
@@ -18,9 +19,10 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-COPY package.json yarn.lock ./
+RUN corepack enable
+COPY package.json yarn.lock .yarnrc.yml ./
 
-RUN yarn install --frozen-lockfile --production
+RUN yarn workspaces focus --production
 
 
 COPY --from=builder /app/prisma ./prisma
