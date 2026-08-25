@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: banking-system
+
+spec:
+  selector:
+    app: banking-system
+    component: postgres
+
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: postgres-port

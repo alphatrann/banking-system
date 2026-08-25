@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mail-deployment
+  namespace: banking-system
+
+spec:
+  selector:
+    matchLabels:
+      app: banking-system
+      component: mail
+
+  template:
+    metadata:
+      labels:
+        app: banking-system
+        component: mail
+        environment: production
+
+    spec:
+      containers:
+        - name: mail
+          image: axllent/mailpit:latest
+          ports:
+            - containerPort: 8025
+              name: inbox-port
+            - containerPort: 1025
+              name: smtp-port

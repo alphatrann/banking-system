@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-service
+  namespace: banking-system
+
+spec:
+  selector:
+    app: banking-system
+    component: minio
+
+  ports:
+    - name: s3
+      protocol: TCP
+      port: 9000
+      targetPort: minio-s3-port
+    - name: gui
+      protocol: TCP
+      port: 9001
+      targetPort: minio-gui-port

@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio-deployment
+  namespace: banking-system
+
+spec:
+  selector:
+    matchLabels:
+      app: banking-system
+      component: minio
+
+  template:
+    metadata:
+      labels:
+        app: banking-system
+        component: minio
+        environment: production
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          ports:
+            - containerPort: 9000
+              name: minio-s3-port
+            - containerPort: 9001
+              name: minio-gui-port
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secrets
+                  key: minio_access_key
+
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secrets
+                  key: minio_secret_key
+          command:
+            - minio
+            - server
+            - /data
+            - --console-address
+            - ':9001'

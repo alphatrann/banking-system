@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-configmaps
+  namespace: banking-system
+
+data:
+  receipt_enc_active_key_version: '1'
+  webhook_enc_active_key_version: '1'
+  minio_endpoint: 'minio-service'
+  minio_port: '9000'
+  otel_collector_url: 'http://otel-collector:4317'
+  loki_url: 'http://loki:3100'
+  node_env: 'production'

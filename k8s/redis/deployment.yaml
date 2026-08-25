@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-deployment
+  namespace: banking-system
+
+spec:
+  selector:
+    matchLabels:
+      app: banking-system
+      component: redis
+
+  template:
+    metadata:
+      labels:
+        app: banking-system
+        component: redis
+        environment: production
+
+    spec:
+      containers:
+        - name: redis-job-queue
+          image: redis:8.8.0-alpine
+          ports:
+            - containerPort: 6379
+              name: redis-port
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secrets
+                  key: redis-password
+          command:
+            - redis-server
+            - --save
+            - '20'
+            - '1'
+            - --loglevel
+            - warning
+            - --requirepass
+            - $(REDIS_PASSWORD) # NOT ${REDIS_PASSWORD}

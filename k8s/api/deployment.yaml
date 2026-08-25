@@ -1,0 +1,137 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-deployment
+  namespace: banking-system
+  labels:
+    app: banking-system
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: banking-system
+      component: api
+
+  template:
+    metadata:
+      labels:
+        app: banking-system
+        component: api
+        environment: production
+    spec:
+      containers:
+        - name: banking-system-api
+          image: banking-system:v0.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+              name: api-port
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secrets
+                  key: postgres_user
+
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secrets
+                  key: postgres_password
+
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secrets
+                  key: postgres_db
+
+            - name: DATABASE_URL
+              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres-service:5432/$(POSTGRES_DB)
+
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: jwt_secret
+
+            - name: RECEIPT_ENC_MASTER_KEY_V1
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: receipt_enc_master_key_v1
+
+            - name: WEBHOOK_ENC_MASTER_KEY_V1
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: webhook_enc_master_key_v1
+
+            - name: CACHE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secrets
+                  key: redis_password
+
+            - name: CACHE_URL
+              value: redis://:$(CACHE_PASSWORD)@redis-service:6379
+
+            - name: RECEIPT_ENC_ACTIVE_KEY_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: api-configmaps
+                  key: receipt_enc_active_key_version
+
+            - name: WEBHOOK_ENC_ACTIVE_KEY_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: api-configmaps
+                  key: webhook_enc_active_key_version
+
+            - name: MAIL_TRANSPORT
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: mail_transport
+
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: api-configmaps
+                  key: minio_endpoint
+
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secrets
+                  key: minio_access_key
+
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secrets
+                  key: minio_secret_key
+
+            - name: MINIO_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: api-configmaps
+                  key: minio_port
+
+            - name: OTEL_COLLECTOR_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: api-configmaps
+                  key: otel_collector_url
+
+            - name: LOKI_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: api-configmaps
+                  key: loki_url
+
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: api-configmaps
+                  key: node_env
