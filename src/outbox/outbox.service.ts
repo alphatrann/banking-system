@@ -108,10 +108,11 @@ export class OutboxService {
                 });
                 break;
               default:
-                console.warn(
-                  'Skipped due to unknown event type',
-                  job.event_type,
-                );
+                this.logger.warn('outbox.event.skipped', {
+                  id: job.id,
+                  eventType: job.event_type,
+                  payload: job.payload,
+                });
                 break;
             }
             span.setStatus({ code: SpanStatusCode.OK });

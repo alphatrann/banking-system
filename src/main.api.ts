@@ -7,9 +7,14 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { watchdog } from './watchdog';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const MAX_SHUTDOWN_ALLOWANCE_SECONDS = 15;
+
+  app.enableShutdownHooks();
+
   const configService = app.get(ConfigService);
 
   // behind 1 proxy: nginx
@@ -24,7 +29,7 @@ async function bootstrap() {
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api', app, document);
-
+  watchdog(MAX_SHUTDOWN_ALLOWANCE_SECONDS, 'api');
   await app.listen(5000);
 }
 bootstrap();

@@ -26,5 +26,6 @@ import { LoggerModule } from '../logger/logger.module';
     LoggerModule,
   ],
   providers: [OutboxService],
+  exports: [OutboxService],
 })
 export class OutboxModule {}
