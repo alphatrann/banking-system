@@ -1836,6 +1836,22 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@nestjs-modules/ioredis@npm:^2.2.2":
+  version: 2.2.2
+  resolution: "@nestjs-modules/ioredis@npm:2.2.2"
+  dependencies:
+    "@nestjs/terminus": "npm:11.1.1"
+  peerDependencies:
+    "@nestjs/common": ">=6.7.0"
+    "@nestjs/core": ">=6.7.0"
+    ioredis: ">=5.0.0"
+  dependenciesMeta:
+    "@nestjs/terminus":
+      optional: true
+  checksum: 10c0/91cfec7779839d15a48faef6b6f9ef6f56c180cbdbccde5fca1994ebafca8c18d9ffc74a6dbaa7cf94fed0efe1d4e31084441ad444c02f1fa1441d60e58adac3
+  languageName: node
+  linkType: hard
+
 "@nestjs-modules/mailer@npm:^2.0.2":
   version: 2.0.2
   resolution: "@nestjs-modules/mailer@npm:2.0.2"
@@ -2124,7 +2140,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@nestjs/terminus@npm:^11.1.1":
+"@nestjs/terminus@npm:11.1.1, @nestjs/terminus@npm:^11.1.1":
   version: 11.1.1
   resolution: "@nestjs/terminus@npm:11.1.1"
   dependencies:
@@ -10881,6 +10897,7 @@ __metadata:
     "@eslint/js": "npm:^9.18.0"
     "@faker-js/faker": "npm:^10.3.0"
     "@nest-lab/throttler-storage-redis": "npm:^1.2.0"
+    "@nestjs-modules/ioredis": "npm:^2.2.2"
     "@nestjs-modules/mailer": "npm:^2.0.2"
     "@nestjs/bullmq": "npm:^11.0.4"
     "@nestjs/cli": "npm:^11.0.0"

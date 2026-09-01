@@ -1,35 +1,37 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import {
   HealthIndicatorService,
   type HealthIndicatorResult,
 } from '@nestjs/terminus';
+import { InjectRedis } from '@nestjs-modules/ioredis';
 import Redis from 'ioredis';
 
 @Injectable()
 export class RedisHealthIndicator {
   constructor(
-    private readonly configService: ConfigService,
+    @InjectRedis() private readonly redisClient: Redis,
     private readonly healthIndicatorService: HealthIndicatorService,
   ) {}
 
   async check(key: string): Promise<HealthIndicatorResult> {
     const indicator = this.healthIndicatorService.check(key);
-    const client = new Redis(this.configService.getOrThrow('CACHE_URL'), {
-      lazyConnect: true,
-      connectTimeout: 2000,
-      maxRetriesPerRequest: 0,
-      retryStrategy: () => null,
-    });
 
     try {
-      await client.connect();
-      await client.ping();
+      if (this.redisClient.status !== 'ready')
+        throw new Error(
+          `Failed to connect Redis. Status: ${this.redisClient.status}`,
+        );
+      const pong = await Promise.race([
+        this.redisClient.ping(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Redis ping timed out')), 2000),
+        ),
+      ]);
+      if (pong !== 'PONG')
+        throw new Error(`Unexpected Redis ping reply: ${pong}`);
       return indicator.up();
     } catch (error) {
       return indicator.down({ message: (error as Error).message });
-    } finally {
-      client.disconnect();
     }
   }
 }

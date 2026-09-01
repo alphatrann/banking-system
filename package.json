@@ -1,6 +1,6 @@
 {
   "name": "payment-system",
-  "version": "0.0.1",
+  "version": "0.2.3",
   "description": "",
   "author": "alphatrann",
   "license": "MIT",
@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "@nest-lab/throttler-storage-redis": "^1.2.0",
+    "@nestjs-modules/ioredis": "^2.2.2",
     "@nestjs-modules/mailer": "^2.0.2",
     "@nestjs/bullmq": "^11.0.4",
     "@nestjs/common": "^11.0.1",
@@ -138,5 +139,5 @@
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   },
-  "packageManager": "yarn@4.13.0+sha512.5c20ba010c99815433e5c8453112165e673f1c7948d8d2b267f4b5e52097538658388ebc9f9580656d9b75c5cc996f990f611f99304a2197d4c56d21eea370e7"
+  "packageManager": "yarn@4.13.0"
 }
