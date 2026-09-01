@@ -3,8 +3,6 @@ kind: Deployment
 metadata:
   name: api-deployment
   namespace: banking-system
-  labels:
-    app: banking-system
 
 spec:
   replicas: 1
@@ -20,13 +18,32 @@ spec:
         component: api
         environment: production
     spec:
+      terminationGracePeriodSeconds: 40 # send a SIGKILL to forcefully kill pods after 40 seconds if they remain hanging after SIGTERM
       containers:
         - name: banking-system-api
-          image: banking-system:v0.1
+          image: localhost/banking-system:v0.2.3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5000
               name: api-port
+          lifecycle:
+            preStop:
+              exec:
+                command: ['sleep', '5']
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: api-port
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: api-port
+            periodSeconds: 10
+
           env:
             - name: POSTGRES_USER
               valueFrom:
