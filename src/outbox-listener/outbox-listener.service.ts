@@ -44,7 +44,10 @@ export class OutboxListenerService
       this.isProcessing = true;
       await this.outboxService.pollOutbox();
     } catch (error) {
-      this.logger.error('outbox.handle.error', { component: 'outbox' });
+      this.logger.error('outbox.handle.error', {
+        component: 'outbox',
+        error: error instanceof Error ? error.stack : String(error),
+      });
     } finally {
       this.isProcessing = false;
     }
